@@ -314,6 +314,7 @@
 "search.searchLiterally" = "Search Literally";
 "search.noMatches" = "No matching lines were found.";
 "extract.progressTitle" = "Extracting";
+"extract.elapsed" = "Elapsed: %@ s";
 "extract.searching" = "Searching: %@";
 "extract.searchStatus" = "%d found, searching line %d";
 "extract.searchStatusTotal" = "%d found, searching line %d / %d";

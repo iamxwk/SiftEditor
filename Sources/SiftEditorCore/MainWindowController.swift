@@ -12,6 +12,8 @@ private final class ExtractionProgressSheet: NSObject {
     private let sheet: NSPanel
     private let indicator = NSProgressIndicator()
     private let percentage = NSTextField(labelWithString: "0%")
+    private let elapsed = NSTextField(labelWithString: L("extract.elapsed", "0.0"))
+    private let startedAt = ProcessInfo.processInfo.systemUptime
     private var searchStatus: NSTextField?
     private let totalLines: Int?
     private var timer: Timer?
@@ -22,7 +24,7 @@ private final class ExtractionProgressSheet: NSObject {
         self.progress = progress
         self.totalLines = totalLines
         sheet = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 440,
-                                            height: showSearchStatus ? 175 : 145),
+                                            height: showSearchStatus ? 205 : 175),
                         styleMask: [.titled], backing: .buffered, defer: false)
         super.init()
         sheet.title = L("extract.progressTitle")
@@ -32,10 +34,12 @@ private final class ExtractionProgressSheet: NSObject {
         indicator.isIndeterminate = false
         indicator.minValue = 0
         indicator.maxValue = 100
+        elapsed.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        elapsed.textColor = .secondaryLabelColor
         let cancel = NSButton(title: L("common.cancel"), target: self, action: #selector(cancelScan))
         cancel.bezelStyle = .rounded
         cancel.keyEquivalent = "\u{1b}"
-        for view in [caption, indicator, percentage, cancel] {
+        for view in [caption, indicator, percentage, elapsed, cancel] {
             view.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(view)
         }
@@ -63,14 +67,17 @@ private final class ExtractionProgressSheet: NSObject {
             percentage.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
             percentage.centerYAnchor.constraint(equalTo: indicator.centerYAnchor),
             percentage.widthAnchor.constraint(equalToConstant: 42),
+            elapsed.leadingAnchor.constraint(equalTo: caption.leadingAnchor),
+            elapsed.topAnchor.constraint(equalTo: indicator.bottomAnchor, constant: 10),
             cancel.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
-            cancel.topAnchor.constraint(equalTo: indicator.bottomAnchor, constant: 19),
+            cancel.topAnchor.constraint(equalTo: elapsed.bottomAnchor, constant: 9),
         ])
         window.beginSheet(sheet)
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in self?.update() }
     }
 
     func finish() {
+        update()
         timer?.invalidate()
         timer = nil
         if let parent, parent.attachedSheet === sheet { parent.endSheet(sheet) }
@@ -91,6 +98,8 @@ private final class ExtractionProgressSheet: NSObject {
         let value = min(100, max(0, progress.fractionCompleted * 100))
         indicator.doubleValue = value
         percentage.stringValue = "\(Int(value))%"
+        let seconds = max(0, ProcessInfo.processInfo.systemUptime - startedAt)
+        elapsed.stringValue = L("extract.elapsed", String(format: "%.1f", seconds))
     }
 }
 

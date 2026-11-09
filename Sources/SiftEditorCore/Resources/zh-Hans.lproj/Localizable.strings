@@ -314,6 +314,7 @@
 "search.searchLiterally" = "逐字搜索";
 "search.noMatches" = "未找到匹配的行。";
 "extract.progressTitle" = "正在提取";
+"extract.elapsed" = "已用时：%@ 秒";
 "extract.searching" = "正在搜索：%@";
 "extract.searchStatus" = "已找到 %d 处，正在搜索第 %d 行";
 "extract.searchStatusTotal" = "已找到 %d 处，正在搜索第 %d / %d 行";
