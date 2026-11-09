@@ -1,0 +1,32 @@
+# 测试数据（可能包含大文件，不纳入版本控制）
+testdata/
+*.log
+
+# macOS
+.DS_Store
+
+# 编辑器本地设置
+.vscode/
+
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xcscmblueprint
+*.xccheckout
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# 工具生成的临时文件
+.playwright-mcp/
+art/AppIcon.iconset/
+
+# 本地环境与工作文件
+.gemini/
+local/
+
+# Local large-file benchmarks
+test.sql

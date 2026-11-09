@@ -1,0 +1,11 @@
+# 差异更新，将 10GB 的实际文件以只读模式插入到 deb 中。
+#
+#   sh run.sh up-big
+#
+# ⚠️ 此路径经过 colima 的虚拟文件系统。偏移量计算：dd skip =
+#    仅使用  tail -c +N 来验证其“正确性”，绝对不要透露此处测量的速度。
+services:
+  deb:
+    volumes:
+      - ./keys:/keys:ro
+      - ../../testdata/test_10gb.log:/srv/logs/big.log:ro

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 100 100" role="img" aria-label="SiftEditor small icon">
+  <rect x="10" y="9" width="80" height="80" rx="19" fill="#18303D"/>
+  <g fill="none" stroke="#EDF7F7" stroke-width="5" stroke-linecap="round">
+    <path d="M27 30h43"/>
+    <path d="M27 41h31"/>
+    <path d="M27 68h39"/>
+  </g>
+  <rect x="22" y="49" width="56" height="13" rx="5" fill="#43D0BE"/>
+  <path d="M29 55.5h40" fill="none" stroke="#123342" stroke-width="5" stroke-linecap="round"/>
+</svg>

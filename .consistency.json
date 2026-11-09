@@ -1,0 +1,39 @@
+{
+  "product": "SiftEditor",
+  "versions": [
+    {
+      "name": "AppInfo.fallbackVersion",
+      "path": "Sources/SiftEditorCore/AppInfo.swift",
+      "pattern": "fallbackVersion = \"([\\d.]+)\""
+    },
+    {
+      "name": "make_app.sh",
+      "path": "scripts/make_app.sh",
+      "pattern": "VERSION:-([\\d.]+)"
+    },
+    {
+      "name": "make_dmg.sh",
+      "path": "scripts/make_dmg.sh",
+      "pattern": "VERSION:-([\\d.]+)"
+    },
+    {
+      "name": "README(en)",
+      "path": "README.md",
+      "pattern": "SiftEditor-([\\d.]+)\\.dmg"
+    },
+    {
+      "name": "README(zh-Hans)",
+      "path": "README.zh-CN.md",
+      "pattern": "SiftEditor-([\\d.]+)\\.dmg"
+    }
+  ],
+  "i18n": {
+    "table": "Sources/SiftEditorCore/Resources/{lang}.lproj/Localizable.strings",
+    "langs": [
+      "en",
+      "zh-Hans"
+    ],
+    "code_dir": "Sources",
+    "call": "L\\(\"([^\"]+)\""
+  }
+}

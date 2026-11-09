@@ -1,0 +1,53 @@
+name: sifteditor-ssh-testbed
+
+x-common: &common
+  volumes:
+    - ./keys:/keys:ro
+  restart: unless-stopped
+
+services:
+  # GNU coreutils 侧。默认验证目标。
+  deb:
+    <<: *common
+    build: { context: ., dockerfile: Dockerfile.debian }
+    hostname: deb
+    ports: ["2201:22"]
+    networks: [edge]
+
+  # RHEL系列。它遵循coreutils和sshd之间的默认差异。
+  alma:
+    <<: *common
+    build: { context: ., dockerfile: Dockerfile.alma }
+    hostname: alma
+    ports: ["2202:22"]
+    networks: [edge]
+
+  # 仅支持密码验证。您必须通过 SSH_ASKPASS（密码为 mred / mred）。
+  pw:
+    <<: *common
+    build: { context: ., dockerfile: Dockerfile.debian }
+    hostname: pw
+    environment: { AUTH: pw }
+    ports: ["2203:22"]
+    networks: [edge]
+
+  # 垫脚石。唯一一个同时拥有 edge 和 inner 脚的主机。
+  jump:
+    <<: *common
+    build: { context: ., dockerfile: Dockerfile.debian }
+    hostname: jump
+    ports: ["2204:22"]
+    networks: [edge, inner]
+
+  # 未暴露其端口，因此无法直接从 Mac 访问。真正的 ProxyJump 验证目标只能通过 jump 访问。
+  inner:
+    <<: *common
+    build: { context: ., dockerfile: Dockerfile.debian }
+    hostname: inner
+    environment: { MOTD_NOISE: "0" }
+    networks: [inner]
+
+networks:
+  edge:
+  inner:
+    internal: true

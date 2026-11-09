@@ -1,0 +1,32 @@
+# 在 macOS 上构建并测试 AppKit 项目。
+name: Build and test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# 如果您在同一分支上再次运行 push，则旧的执行将被丢弃。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 记录 Swift 版本
+        run: swift --version
+
+      - name: 构建 Debug 版本
+        run: swift build
+
+      - name: 运行测试
+        run: swift test
+
+      - name: 检查版本、本地化与功能门控
+        run: python3 scripts/check_consistency.py

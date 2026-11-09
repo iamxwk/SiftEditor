@@ -1,0 +1,33 @@
+name: 功能请求 / Feature request
+description: 提交期望新增或修复的功能。
+title: "[功能请求] "
+labels: ["request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你的建议。你可以在此 Issue 中查看进展。
+
+        Thank you for the suggestion. Follow this issue for updates.
+  - type: textarea
+    id: what
+    attributes:
+      label: 你希望实现什么？ / What would you like?
+      description: 请描述需要新增或修复的功能。
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: 使用场景或遇到的问题 / What problem or situation is it for?
+      description: 你在什么情况下打开哪类文件？具体信息有助于判断需求。
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / Version
+      description: 从应用的“提交功能请求…”入口打开时会自动填写。
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      description: 从应用的“提交功能请求…”入口打开时会自动填写。
