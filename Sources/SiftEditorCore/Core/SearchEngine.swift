@@ -57,10 +57,34 @@ final class SearchEngine {
 
         queue.async { [weak self] in
             guard let self else { return }
+            if case .regex(let expression) = mode, resume == nil,
+               RipgrepSearch.canUseFastPath(expression.pattern),
+               self.encoding == .utf8, let file = self.buffer as? FileBuffer,
+               total >= 16 << 20, RipgrepSearch.executable != nil {
+                var fast = Result()
+                do {
+                    try RipgrepSearch.scan(url: file.url, pattern: expression.pattern,
+                                           caseSensitive: caseSensitive,
+                                           cancelled: { self.generation != gen }) { number, _ in
+                        fast.lineCount += 1
+                        if fast.lines.count < cap { fast.lines.append(number) }
+                        else { fast.capped = true }
+                    }
+                    guard self.generation == gen else { return }
+                    fast.isComplete = true
+                    let final = fast
+                    DispatchQueue.main.async { if self.generation == gen { completion(final) } }
+                    return
+                } catch {
+                    // Some ICU expressions are not accepted by ripgrep's engines.
+                    // Preserve existing Find semantics with the in-process matcher.
+                    if self.generation != gen { return }
+                }
+            }
             var res = Result()
             var lineNo = 0
             var start = 0
-            if let r = resume, r.isComplete, r.resumeByte <= total {
+            if let r = resume, r.isComplete, r.resumeByte > 0, r.resumeByte <= total {
                 res = r
                 res.isComplete = false
                 let kept = r.lines.filter { $0 < r.resumeLine }
@@ -70,6 +94,7 @@ final class SearchEngine {
                 start = r.resumeByte
             }
             var reported = start
+            var cancellationChecked = start
 
             self.buffer.withBytes(in: 0..<total) { raw in
                 guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
@@ -87,7 +112,12 @@ final class SearchEngine {
                     i = (nl != nil) ? lineEnd + 1 : total
                     if nl != nil { res.resumeByte = i; res.resumeLine = lineNo }
 
-                    if i - reported >= (64 << 20) {        // 每个  64MB 的进度报告和取消确认
+                    if i - cancellationChecked >= (4 << 20) {
+                        if self.generation != gen { return }
+                        cancellationChecked = i
+                    }
+
+                    if i - reported >= (64 << 20) {        // 每个 64 MB 报告一次进度
                         if self.generation != gen { return }
                         reported = i
                         let snapshot = res

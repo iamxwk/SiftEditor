@@ -38,9 +38,8 @@ set -e
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="${APP_NAME:-SiftEditor}"
-VERSION="${VERSION:-1.24.1}"
+VERSION="${VERSION:-}"
 APP="$ROOT/.build/$APP_NAME.app"
-DMG="$ROOT/.build/$APP_NAME-$VERSION.dmg"
 
 # Apple 使其在 Silicon 和 Intel 上都能工作。
 # 单独使用  `swift build -c release` 将生成特定于构建机器架构的二进制文件。
@@ -50,7 +49,9 @@ swift build -c release --arch arm64 --arch x86_64
 
 echo ">> 创建并签名 .app 包"
 BINDIR="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)"
-APP_NAME="$APP_NAME" BINDIR="$BINDIR" sh "$ROOT/scripts/make_app.sh" release >/dev/null
+APP_NAME="$APP_NAME" BINDIR="$BINDIR" VERSION="$VERSION" sh "$ROOT/scripts/make_app.sh" release >/dev/null
+VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
+DMG="$ROOT/.build/$APP_NAME-$VERSION.dmg"
 
 # 首先，对 .app 本身进行公证，并将其更改为 staple。
 # 如果只将 staple 应用于  dmg，则将其拖到 Applications 后，.app 中将不会有任何票据。

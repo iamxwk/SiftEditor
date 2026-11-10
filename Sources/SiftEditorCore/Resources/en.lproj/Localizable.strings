@@ -114,10 +114,6 @@
 "menu.structured.ndjson" = "NDJSON";
 "menu.structured.json" = "JSON";
 "menu.structured.fixedWidth" = "Fixed-width";
-"structured.banner" = "Structured view (read-only)";
-"structured.revert" = "Back to raw text";
-"structured.hint" = "Display-only formatting. Your file is never modified (saving keeps the original CSV/JSON).";
-"structured.presetsButton" = "View Presets…";
 "menu.jsonquery" = "JSON Query…";
 "menu.columnRuler" = "Column Ruler";
 "menu.columnRuler.fields" = "Column Fields…";
@@ -313,6 +309,7 @@
 "search.useRegex" = "Use Regular Expressions";
 "search.searchLiterally" = "Search Literally";
 "search.noMatches" = "No matching lines were found.";
+"search.snapshotFailed" = "Could not search the unsaved document.";
 "extract.progressTitle" = "Extracting";
 "extract.elapsed" = "Elapsed: %@ s";
 "extract.searching" = "Searching: %@";
@@ -614,12 +611,15 @@
 "frequent.ascending" = "Least frequent first";
 "frequent.run" = "Extract";
 "frequent.scanning" = "Counting strings…";
+"frequent.maximumMatches" = "Max matches:";
+"frequent.matchStatus" = "%d / %d matches";
 "frequent.cancelHint" = "The source document stays unchanged. Cancel to stop scanning.";
 "frequent.saveFirst" = "Save this large document before counting its contents.";
 "frequent.failed" = "Could not extract frequent strings";
 "frequent.error.pattern" = "Enter a valid, nonempty regular expression.";
 "frequent.error.line" = "A line exceeds the 64 MB safety limit.";
 "frequent.error.values" = "The file contains more than 500,000 distinct values.";
+"frequent.error.matches" = "More than %d matches were found. Counting stopped; no incomplete result was created. Increase Max matches to scan more.";
 "frequent.error.memory" = "Distinct strings exceed the 2 GB memory limit. Narrow the input first.";
 "frequent.error.read" = "The source file could not be read.";
 "frequent.error.encoding" = "Counting UTF-16 files is not supported yet.";
@@ -639,3 +639,6 @@
 "status.tip.previousMismatch" = "Go to previous mismatched line";
 "status.tip.nextMismatch" = "Go to next mismatched line";
 "status.tip.nextColumnMismatch" = "Click to go to the next line with a different column count";
+"csv.cell" = "Cell";
+"csv.applyCell" = "Apply";
+"csv.invalidQuote" = "This CSV has an unclosed quoted field. It remains in the read-only structured view.";

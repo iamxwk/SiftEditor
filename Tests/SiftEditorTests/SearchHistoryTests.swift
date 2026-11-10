@@ -9,6 +9,29 @@ import AppKit
 /// （最初，我误解了这一点，以为它会自动与 Enter 一起累积，但它并没有在实际设备上累积）。
 /// 在这里，我们只关注自定义逻辑：“堆叠、删除重复项、按最新排序，并在上限处截断”。
 final class SearchHistoryTests: XCTestCase {
+    private var savedRegexOption: Any?
+    private var savedSearchHistory: Any?
+
+    override func setUp() {
+        super.setUp()
+        savedRegexOption = UserDefaults.standard.object(forKey: "SiftEditor.find.regex")
+        savedSearchHistory = UserDefaults.standard.object(forKey: "SiftEditor.searchHistory")
+    }
+
+    override func tearDown() {
+        if let savedRegexOption {
+            UserDefaults.standard.set(savedRegexOption, forKey: "SiftEditor.find.regex")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "SiftEditor.find.regex")
+        }
+        if let savedSearchHistory {
+            UserDefaults.standard.set(savedSearchHistory, forKey: "SiftEditor.searchHistory")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "SiftEditor.searchHistory")
+        }
+        super.tearDown()
+    }
+
     /// `recentsAutosaveName` 将保留为用户默认值，因此 `SearchBarView()`
     /// 即使创建新的测试，它也会继承上次测试的历史记录。每次开始测试前请将其删除。
     private func freshBar() -> SearchBarView {
@@ -27,21 +50,15 @@ final class SearchHistoryTests: XCTestCase {
     func testSearchMenuTemplateEnabled() {
         let bar = freshBar()
         XCTAssertTrue(bar._testSearchHistoryMenuEnabled)
-        XCTAssertTrue(bar._testHistoryDropdownEnabled)
     }
 
-    func testDropdownSelectionUpdatesActiveQuery() {
+    func testNativeHistorySurvivesRecreatingSearchBar() {
         let bar = freshBar()
         bar._testCommitSearch("alpha")
         bar._testCommitSearch("beta")
-        var selected: String?
-        bar.onQueryChange = { selected = $0 }
-
-        bar._testSelectRecentSearch("alpha")
-
-        XCTAssertEqual(bar.query, "alpha")
-        XCTAssertEqual(selected, "alpha")
-        XCTAssertEqual(bar._testRecentSearches, ["beta", "alpha"])
+        let reopened = SearchBarView()
+        XCTAssertEqual(reopened._testRecentSearches, ["beta", "alpha"])
+        XCTAssertTrue(reopened._testSearchHistoryMenuEnabled)
     }
 
     func testFindAssistMenuShowsAvailableAndMissingActions() {
@@ -89,26 +106,21 @@ final class SearchHistoryTests: XCTestCase {
         XCTAssertEqual(bar._testRecentSearches, ["alpha", "bravo"])
     }
 
-    func testDropdownRemovesStoredDuplicatesKeepingNewest() {
+    func testNativeHistoryRemovesStoredDuplicatesKeepingNewest() {
         let bar = freshBar()
         bar._testLoadRecentSearches(["DROP TABLE.*", "alpha", "DROP TABLE.*",
                                      "DROP TABLE .*", "alpha"])
-
-        let titles = bar._testHistoryDropdownMenu.items.map(\.title)
-
-        XCTAssertEqual(titles, ["DROP TABLE.*", "alpha", "DROP TABLE .*"])
-        XCTAssertEqual(bar._testRecentSearches, titles)
+        let reopened = SearchBarView()
+        XCTAssertEqual(reopened._testRecentSearches, ["DROP TABLE.*", "alpha", "DROP TABLE .*"])
     }
 
-    func testDropdownCollapsesConsecutiveIntermediateQueriesWithoutDeletingHistory() {
+    func testNativeHistoryKeepsDistinctPrefixes() {
         let bar = freshBar()
         let searches = ["DROP TABLE.*", "DROP TABLE.", "DROP TABLE .*", "DROP TABLE .",
                         "DROP TABLE", "a", "beta", "alpha", "alph", "al"]
         bar._testLoadRecentSearches(searches)
-
-        XCTAssertEqual(bar._testHistoryDropdownMenu.items.map(\.title),
-                       ["DROP TABLE.*", "a", "beta", "alpha"])
-        XCTAssertEqual(bar._testRecentSearches, searches)
+        let reopened = SearchBarView()
+        XCTAssertEqual(reopened._testRecentSearches, searches)
     }
 
     func testEmptyQueryIsNotRemembered() {
@@ -136,7 +148,7 @@ final class SearchHistoryTests: XCTestCase {
         XCTAssertEqual(received, ["os"])
     }
 
-    func testSelectedTextPrefillsLiteralSearchAndUpdatesViewer() {
+    func testSelectedTextPrefillsWithoutChangingSearchMode() {
         let bar = freshBar()
         bar.setQuery("old.*", regex: true, caseSensitive: true, filter: false)
         var receivedQuery: String?
@@ -147,9 +159,9 @@ final class SearchHistoryTests: XCTestCase {
         bar.prefillFromSelection("DROP TABLE")
 
         XCTAssertEqual(bar.query, "DROP TABLE")
-        XCTAssertFalse(bar.isRegex)
+        XCTAssertTrue(bar.isRegex)
         XCTAssertTrue(bar.isCaseSensitive)
-        XCTAssertEqual(receivedRegex, false)
+        XCTAssertNil(receivedRegex)
         XCTAssertEqual(receivedQuery, "DROP TABLE")
     }
 

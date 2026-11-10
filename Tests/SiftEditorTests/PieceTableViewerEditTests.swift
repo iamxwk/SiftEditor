@@ -5,6 +5,36 @@ import AppKit
 /// B2b（文本变体 + Undo/Redo + Cut/Paste）将以 document 为单位进行无头验证。
 /// 不要设置  / GUI，而是通过 `PieceTableViewer` 的测试接缝驱动编辑管道。
 final class PieceTableViewerEditTests: XCTestCase {
+    func testFindSearchesUnsavedLargeViewerSnapshotAndRefreshesAfterEdit() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try "old\n".write(to: url, atomically: true, encoding: .utf8)
+        let viewer = PieceTableViewer(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        XCTAssertTrue(viewer.open(url: url))
+        let deadline = Date().addingTimeInterval(5)
+        while viewer._testDocString != "old\n", Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertEqual(viewer._testDocString, "old\n")
+        viewer._testSetCaret(0)
+        viewer._testInsert("DROP TABLE first;\n")
+        XCTAssertTrue(viewer.supportsSearch)
+        viewer.setRegexMode(true)
+        let first = expectation(description: "find first unsaved line")
+        viewer.onSearchState = { _, total, searching, _, _, _ in
+            if !searching && total == 1 { first.fulfill() }
+        }
+        viewer.setSearchQuery("DROP TABLE.*")
+        wait(for: [first], timeout: 5)
+        viewer._testSetCaret(0)
+        let second = expectation(description: "refresh after another edit")
+        viewer.onSearchState = { _, total, searching, _, _, _ in
+            if !searching && total == 2 { second.fulfill() }
+        }
+        viewer._testInsert("DROP TABLE second;\n")
+        wait(for: [second], timeout: 5)
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "old\n")
+    }
     private func makeViewer(_ text: String) -> PieceTableViewer {
         let v = PieceTableViewer(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
         v._testLoad(Array(text.utf8))

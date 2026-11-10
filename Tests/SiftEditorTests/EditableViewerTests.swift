@@ -86,12 +86,54 @@ final class EditableViewerTests: XCTestCase {
         XCTAssertTrue(v.open(url: url))
         v.setStructuredMode(.csv)                    // 列对齐显示
         XCTAssertEqual(v.structuredMode, .csv)
-        XCTAssertFalse(v.canEdit)                    // 结构化时只读。
+        XCTAssertTrue(v.canEdit)                     // CSV 表格可编辑。
+        XCTAssertFalse(v.supportsReplace)            // 原始文本的替换功能不能修改隐藏的文本视图。
+        XCTAssertFalse(v.supportsMultiCursor)
+        XCTAssertTrue(v.subviews.contains(where: { $0 is CSVGridView }))
 
         XCTAssertTrue(v._testWrite(to: url))         // close → 保存等，即使调用了 write() 也是如此……
         let saved = try String(contentsOf: url, encoding: .utf8)
         XCTAssertEqual(saved, text)                  // ……仍然是原装 CSV
         XCTAssertFalse(saved.contains("│"))          // 未包含分隔符。
+    }
+
+    func testCSVCellEditUpdatesSourceAndSavedFile() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try "name,note\r\nalpha,plain\r\n".write(to: url, atomically: true, encoding: .utf8)
+        let viewer = EditableViewer()
+        XCTAssertTrue(viewer.open(url: url))
+        viewer.setStructuredMode(.csv)
+        guard let grid = viewer.subviews.compactMap({ $0 as? CSVGridView }).first,
+              let top = grid.subviews.first,
+              let editor = top.subviews.compactMap({ ($0 as? NSScrollView)?.documentView as? NSTextView }).first else {
+            return XCTFail("CSV cell editor is missing")
+        }
+        editor.string = "a,\"b\""
+        XCTAssertTrue(grid.flushPendingEdit())
+        XCTAssertEqual(viewer.restorableText, "name,note\r\n\"a,\"\"b\"\"\",plain\r\n")
+        XCTAssertTrue(viewer._testWrite(to: url))
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), viewer.restorableText)
+        viewer.setStructuredMode(nil)
+        XCTAssertEqual(viewer._testText, viewer.restorableText)
+    }
+
+    func testGeneratedCSVReportUsesNumberedEditableColumns() throws {
+        let viewer = EditableViewer(frame: NSRect(x: 0, y: 0, width: 900, height: 570))
+        viewer.setGeneratedCSVText("alpha,3\nbeta,2\n", hasHeader: false)
+        viewer.setStructuredMode(.csv)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 570),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = viewer
+        viewer.layoutSubtreeIfNeeded()
+        guard let grid = viewer.subviews.compactMap({ $0 as? CSVGridView }).first else {
+            return XCTFail("CSV grid is missing")
+        }
+        XCTAssertEqual(grid.document.columnNames, ["1", "2"])
+        XCTAssertEqual(grid.document.rowCount, 2)
+        XCTAssertTrue(viewer.canEdit)
+        XCTAssertGreaterThan(grid.bounds.width, 800)
+        XCTAssertGreaterThan(grid.bounds.height, 500)
     }
 
     /// 关闭结构化视图将恢复为可编辑模式，并且主文本也将恢复到其原始状态。
@@ -104,17 +146,16 @@ final class EditableViewerTests: XCTestCase {
         let v = EditableViewer()
         XCTAssertTrue(v.open(url: url))
         v.setStructuredMode(.csv)
-        XCTAssertNotEqual(v._testText, text)         // 格式化后显示
+        XCTAssertTrue(v.subviews.contains(where: { $0 is CSVGridView }))
+        XCTAssertEqual(v._testText, text)             // 表格视图不改写原始文本。
         v.setStructuredMode(nil)
         XCTAssertNil(v.structuredMode)
         XCTAssertTrue(v.canEdit)
         XCTAssertEqual(v._testText, text)            // 已恢复为原文
     }
 
-    /// 在实际设备上发现的错误（2026-09-25）：CSV/TSV 的结构化显示导致第一行加粗，
-    /// 关闭时，`NSTextStorage.replaceCharacters` 是替换范围的第一个字符（= 粗体）。
-    /// 继承 （第一行的第一个字符）的属性，**整个恢复的文本变为粗体**。
-    func testExitStructuredDoesNotLeaveBoldFont() throws {
+    /// CSV 表格视图不应为隐藏的原始文本留下格式化属性。
+    func testCSVGridDoesNotAlterRawTextFont() throws {
         let text = "name,age\nAlice,30\nBob,7\n"
         let url = tempURL()
         defer { try? FileManager.default.removeItem(at: url) }
@@ -123,7 +164,7 @@ final class EditableViewerTests: XCTestCase {
         let v = EditableViewer()
         XCTAssertTrue(v.open(url: url))
         v.setStructuredMode(.csv)
-        XCTAssertTrue(v._testStoredFontTraits(at: 0).contains(.bold))   // 格式化过程中的第一行是粗体（前提条件）。
+        XCTAssertFalse(v._testStoredFontTraits(at: 0).contains(.bold))
         v.setStructuredMode(nil)
         XCTAssertFalse(v._testStoredFontTraits(at: 0).contains(.bold))  // 恢复后的文本不是粗体。
         XCTAssertFalse(v._testStoredFontTraits(at: v._testText.utf16.count - 1).contains(.bold))

@@ -6,7 +6,7 @@ import AppKit
 /// 原图为 `FileBuffer` (mmap) 与 `PieceTable` 叠加，仅对可见的线条进行解码并现场绘制。
 ///
 /// - 未编辑（干净）：显示、搜索（`SearchEngine`）和关注（tail -f）使用 LineIndex + mmap 执行。
-/// - 编辑后 (dirty): piece 和 table 显示为 true，搜索和跟踪暂时暂停（由于与 mmap 存在差异）。
+/// - 编辑后 (dirty): 从 piece table 快照搜索，跟踪暂时暂停。
 /// 保存涉及流式导出整个文本 → 替换为 atomic（异步，显示进度）。
 final class PieceTableViewer: NSView, DocumentPane {
     private let documentView = DocumentView()
@@ -102,13 +102,15 @@ final class PieceTableViewer: NSView, DocumentPane {
     /// 替换操作期间不要删除搜索模式（因为它会通过重复替换继续搜索下一个匹配项）。
     private var preserveSearchOnEdit = false
 
-    // 搜索/跟踪 (B4)：当存在未保存的编辑时禁用（因为文档将与 mmap 不同）。
+    // 搜索/跟踪 (B4)：未保存的编辑通过快照搜索；跟踪仍依赖原始文件。
     // 即使使用结构化视图（只读格式化视图）也无效。
     // 搜索和跟踪关注的是**字节位置**，而数字对齐关注的是**显示**。它们彼此独立，因此即使在结构化数据中也可以应用。
     // 当“仅显示匹配的行（筛选）”与结构化格式结合使用时，结果为“grep，同时保持数字对齐”。
     // 但是，无法显示特定行的匹配高亮显示（因为格式化后的字符位置与原始字节位置不对应）。
     // （参见  `decodeLine`）。出于同样的原因，在结构化过程中不接受替换（`supportsReplace`）。
-    var supportsSearch: Bool { searchEngine != nil && !isDirty }
+    var supportsSearch: Bool { searchEngine != nil }
+    /// A stable copy of unsaved edits for extraction; safe to stream off the UI thread.
+    func extractionSnapshot() -> PieceTable? { isDirty ? pieceTable?.snapshot() : nil }
     var supportsReplace: Bool { structuredFormatter == nil }
     var supportsFollow: Bool { fileBuffer != nil && !isDirty }
 
@@ -128,7 +130,7 @@ final class PieceTableViewer: NSView, DocumentPane {
     var filterMatchLines: [Int]? { filterMode ? searchResults.lines : nil }
 
     /// 虽然干净（未经编辑），但显示、搜索和关注均使用 LineIndex+mmap（原始内容 = piece table）。
-    /// 当编辑为 dirty、piece 和 table 时，显示为真，搜索和跟踪停止。
+    /// 编辑为 dirty 时，显示和搜索读取 piece table；跟踪停止。
     private var readsFromOriginal: Bool { !isDirty }
 
     // MARK: - 搜索状态（从 B4 和 LargeFileViewer 转移而来。仅在清理后有效）
@@ -152,6 +154,9 @@ final class PieceTableViewer: NSView, DocumentPane {
     /// ANSI 调色板（已随主题更改更新）。
     private var ansiPalette = ANSIPalette.from(theme: EditorTheme.current())
     private var searchEngine: SearchEngine?
+    private var dirtySearchEngine: SearchEngine?
+    private var dirtySearchURL: URL?
+    private var dirtySnapshotProgress: Progress?
     private var searchResults = SearchEngine.Result()
     private var currentMatchIdx = -1
     private var currentMatchLine = -1
@@ -176,6 +181,8 @@ final class PieceTableViewer: NSView, DocumentPane {
 
     deinit {
         blinkTimer?.invalidate()
+        dirtySnapshotProgress?.cancel()
+        if let dirtySearchURL { try? FileManager.default.removeItem(at: dirtySearchURL) }
         NotificationCenter.default.removeObserver(self)
     }
 
@@ -1131,6 +1138,10 @@ final class PieceTableViewer: NSView, DocumentPane {
         if batchEditing { return }   // 在批量替换过程中，最后一部分一次性全部重新绘制。
         scrollCaretIntoView()
         refresh()
+        if !wasClean {
+            clearDirtySearchFile()
+            if !searchQuery.isEmpty && !preserveSearchOnEdit { rebuildSearch() }
+        }
     }
 
     /// 在光标位置（或选定范围内，如果有）插入 `bytes`。
@@ -1222,6 +1233,7 @@ final class PieceTableViewer: NSView, DocumentPane {
     private func setDirty(_ value: Bool) {
         guard value != isDirty else { return }
         isDirty = value
+        if !value { clearDirtySearchFile() }
         onDirtyChange?(value)
     }
 
@@ -1519,16 +1531,17 @@ final class PieceTableViewer: NSView, DocumentPane {
         refresh()
     }
 
-    // MARK: - 搜索（仅当 B4 干净时有效。使用 SearchEngine 扫描 mmap）
+    // MARK: - 搜索（干净时扫描原文件；编辑后扫描冻结快照）
 
-    func setSearchQuery(_ q: String) { guard readsFromOriginal, q != searchQuery else { return }; searchQuery = q; rebuildSearch() }
-    func setRegexMode(_ on: Bool) { guard readsFromOriginal, on != regexMode else { return }; regexMode = on; rebuildSearch() }
-    func setCaseSensitive(_ on: Bool) { guard readsFromOriginal, on != caseSensitive else { return }; caseSensitive = on; rebuildSearch() }
+    func setSearchQuery(_ q: String) { guard q != searchQuery else { return }; searchQuery = q; rebuildSearch() }
+    func setRegexMode(_ on: Bool) { guard on != regexMode else { return }; regexMode = on; rebuildSearch() }
+    func setCaseSensitive(_ on: Bool) { guard on != caseSensitive else { return }; caseSensitive = on; rebuildSearch() }
     /// Extraction scans the same file; stop an unfinished Find scan so both do not compete for it.
     func suspendSearchForExtraction() -> Bool {
         guard !searchQuery.isEmpty, !searchResults.isComplete else { return false }
         searchDebounce?.cancel()
         searchEngine?.cancel()
+        dirtySearchEngine?.cancel()
         return true
     }
 
@@ -1543,6 +1556,8 @@ final class PieceTableViewer: NSView, DocumentPane {
         let epoch = searchEpoch
         searchDebounce?.cancel()
         searchEngine?.cancel()
+        dirtySearchEngine?.cancel()
+        dirtySnapshotProgress?.cancel()
         currentMatchIdx = -1
         currentMatchLine = -1
         searchTerms = []
@@ -1557,8 +1572,16 @@ final class PieceTableViewer: NSView, DocumentPane {
         } else {
             searchTerms = SearchMode.splitTerms(searchQuery)
         }
-        refresh()
+        if filterMode {
+            refresh()
+        } else {
+            // Changing a Find option does not change visible document text. Avoid
+            // decoding and laying out large visible lines on the click path.
+            documentView.activeRow = nil
+            documentView.needsDisplay = true
+        }
         if searchQuery.isEmpty {
+            clearDirtySearchFile()
             searchResults = .init(); filterDisplayLines = []
             if filterMode { refresh() }
             emitSearchState(searching: false, progress: 0, invalid: false); return
@@ -1580,7 +1603,48 @@ final class PieceTableViewer: NSView, DocumentPane {
         // 由于跳过了  emitSearchState，进度条停止在 0%。
         // 表示“我不知道它何时结束”（这是该人于 2026 年 9 月 5 日指出的）。
         // 筛选由显示匹配行的一方处理，并且该一方负责通知筛选是否完成。
-        searchEngine?.search(mode, caseSensitive: caseSensitive, progress: { [weak self] res, p in
+        if !readsFromOriginal {
+            if let dirtySearchEngine {
+                performSearch(dirtySearchEngine, mode: mode, epoch: epoch)
+                return
+            }
+            guard let snapshot = pieceTable?.snapshot() else { return }
+            let task = Progress(totalUnitCount: 1)
+            dirtySnapshotProgress = task
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let url: URL
+                do { url = try PieceTableSnapshotFile.write(snapshot, cancelled: { task.isCancelled }) }
+                catch {
+                    if !task.isCancelled {
+                        DispatchQueue.main.async { self?.failDirtySearch(error, epoch: epoch) }
+                    }
+                    return
+                }
+                DispatchQueue.main.async {
+                    guard let self, self.searchEpoch == epoch, self.isDirty else {
+                        try? FileManager.default.removeItem(at: url)
+                        return
+                    }
+                    guard let buffer = FileBuffer(url: url) else {
+                        try? FileManager.default.removeItem(at: url)
+                        self.failDirtySearch(FrequentStrings.Failure.unreadable, epoch: epoch)
+                        return
+                    }
+                    self.dirtySnapshotProgress = nil
+                    self.dirtySearchURL = url
+                    let engine = SearchEngine(buffer: buffer, encoding: self.encoding)
+                    self.dirtySearchEngine = engine
+                    self.performSearch(engine, mode: mode, epoch: epoch)
+                }
+            }
+            return
+        }
+        guard let searchEngine else { return }
+        performSearch(searchEngine, mode: mode, epoch: epoch)
+    }
+
+    private func performSearch(_ engine: SearchEngine, mode: SearchMode, epoch: Int) {
+        engine.search(mode, caseSensitive: caseSensitive, progress: { [weak self] res, p in
             guard let self, self.searchEpoch == epoch else { return }
             self.searchResults = res
             if self.filterMode { self.rebuildFilterDisplayLines(); self.refresh() }
@@ -1593,6 +1657,26 @@ final class PieceTableViewer: NSView, DocumentPane {
         })
     }
 
+    private func clearDirtySearchFile() {
+        dirtySnapshotProgress?.cancel()
+        dirtySnapshotProgress = nil
+        dirtySearchEngine?.cancel()
+        dirtySearchEngine = nil
+        if let dirtySearchURL { try? FileManager.default.removeItem(at: dirtySearchURL) }
+        dirtySearchURL = nil
+    }
+
+    private func failDirtySearch(_ error: Error, epoch: Int) {
+        guard searchEpoch == epoch else { return }
+        dirtySnapshotProgress = nil
+        emitSearchState(searching: false, progress: 0, invalid: false)
+        let alert = NSAlert()
+        alert.messageText = L("search.snapshotFailed")
+        alert.informativeText = error.localizedDescription
+        if let window { alert.beginSheetModal(for: window) }
+        else { NSLog("SiftEditor Find snapshot failed: %@", error.localizedDescription) }
+    }
+
     private func clearSearchState() {
         searchQuery = ""; searchTerms = []; searchRegex = nil
         filterMode = false; searchResults = .init()
@@ -1601,6 +1685,7 @@ final class PieceTableViewer: NSView, DocumentPane {
         searchEpoch += 1
         searchDebounce?.cancel()
         searchEngine?.cancel()
+        clearDirtySearchFile()
     }
 
     /// 仅显示指定的行。它不进行匹配行的搜索，而是直接使用提供的行号。
@@ -1863,6 +1948,7 @@ final class PieceTableViewer: NSView, DocumentPane {
         }
         preserveSearchOnEdit = false
         batchEditing = false
+        clearDirtySearchFile()
         undoMgr.endUndoGrouping()
 
         selectionAnchor = caretByte

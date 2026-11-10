@@ -18,10 +18,17 @@ let package = Package(
     targets: [
         .target(
             name: "SiftEditorCore",
+            dependencies: ["SiftDigitScanner"],
             path: "Sources/SiftEditorCore",
             resources: [
                 .process("Resources")
             ]
+        ),
+        .target(
+            name: "SiftDigitScanner",
+            path: "Sources/SiftDigitScanner",
+            publicHeadersPath: "include",
+            linkerSettings: [.linkedLibrary("icucore")]
         ),
         .executableTarget(
             name: "SiftEditor",

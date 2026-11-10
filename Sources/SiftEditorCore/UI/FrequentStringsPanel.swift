@@ -6,6 +6,7 @@ final class FrequentStringsPanel: NSPanel, NSWindowDelegate {
         let kind: FrequentStrings.Kind
         let pattern: String
         let maximumRows: Int
+        let maximumMatches: Int
         let caseSensitive: Bool
         let ignoredStrings: [String]
     }
@@ -14,18 +15,19 @@ final class FrequentStringsPanel: NSPanel, NSWindowDelegate {
     private let pattern = NSTextField()
     private let matchCase = NSButton(checkboxWithTitle: L("frequent.matchCase"), target: nil, action: nil)
     private let maximumRows = NSTextField(string: "100")
-    private let ignoredEditor = IgnoredStringsEditor(frame: NSRect(x: 13, y: 42, width: 344, height: 112))
+    private let maximumMatches = NSTextField(string: String(FrequentStrings.defaultMatchLimit))
+    private let ignoredEditor = IgnoredStringsEditor(frame: NSRect(x: 13, y: 43, width: 344, height: 112))
 
     init() {
-        super.init(contentRect: NSRect(x: 0, y: 0, width: 370, height: 620),
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 370, height: 650),
                    styleMask: [.titled, .closable], backing: .buffered, defer: false)
         title = L("frequent.title")
         isReleasedWhenClosed = false
         delegate = self
-        let content = NSView(frame: NSRect(x: 0, y: 0, width: 370, height: 620))
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 370, height: 650))
         contentView = content
         func frame(_ x: CGFloat, _ top: CGFloat, _ width: CGFloat, _ height: CGFloat) -> NSRect {
-            NSRect(x: x, y: 620 - top - height, width: width, height: height)
+            NSRect(x: x, y: 650 - top - height, width: width, height: height)
         }
         func label(_ key: String, top: CGFloat) {
             let view = NSTextField(labelWithString: L(key))
@@ -72,7 +74,7 @@ final class FrequentStringsPanel: NSPanel, NSWindowDelegate {
         selection.isEnabled = false
         content.addSubview(selection)
 
-        let outputBox = NSBox(frame: frame(13, 365, 344, 90))
+        let outputBox = NSBox(frame: frame(13, 365, 344, 120))
         outputBox.title = L("frequent.output")
         content.addSubview(outputBox)
         label("search.maximumRows", top: 385)
@@ -87,12 +89,16 @@ final class FrequentStringsPanel: NSPanel, NSWindowDelegate {
             format.lastItem?.isEnabled = supported
         }
         content.addSubview(format)
+        label("frequent.maximumMatches", top: 447)
+        maximumMatches.frame = frame(137, 442, 203, 24)
+        maximumMatches.isEnabled = false
+        content.addSubview(maximumMatches)
 
         content.addSubview(ignoredEditor)
         func button(_ key: String, x: CGFloat, action: Selector) {
             let view = NSButton(title: L(key), target: self, action: action)
             view.bezelStyle = .rounded
-            view.frame = frame(x, 585, 76, 27)
+            view.frame = frame(x, 615, 76, 27)
             content.addSubview(view)
         }
         button("common.ok", x: 197, action: #selector(accept))
@@ -108,12 +114,14 @@ final class FrequentStringsPanel: NSPanel, NSWindowDelegate {
         let kind = FrequentStrings.Kind(rawValue: kindButtons.first(where: { $0.state == .on })?.tag ?? 0) ?? .lines
         return Options(kind: kind, pattern: pattern.stringValue,
                        maximumRows: min(max(Int(maximumRows.stringValue) ?? 100, 1), 100_000),
+                       maximumMatches: min(max(Int(maximumMatches.stringValue) ?? FrequentStrings.defaultMatchLimit, 1), 1_000_000_000),
                        caseSensitive: matchCase.state == .on, ignoredStrings: ignoredEditor.strings)
     }
 
     @objc private func kindChanged(_ sender: NSButton) {
         for button in kindButtons { button.state = button === sender ? .on : .off }
         pattern.isHidden = sender.tag != FrequentStrings.Kind.regex.rawValue
+        maximumMatches.isEnabled = sender.tag == FrequentStrings.Kind.regex.rawValue
     }
     @objc private func accept() { NSApp.stopModal(withCode: .OK) }
     @objc private func cancel() { NSApp.stopModal(withCode: .cancel) }

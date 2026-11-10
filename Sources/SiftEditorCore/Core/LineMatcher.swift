@@ -1,4 +1,5 @@
 import Foundation
+import SiftDigitScanner
 
 /// 搜索表达式。**它是字面值 AND 还是正则表达式？**
 ///
@@ -55,6 +56,7 @@ public enum SearchMode {
 public struct LineMatcher {
 
     private let regex: NSRegularExpression?
+    private let useDigitByteSearch: Bool
     /// 对  / UTF-8 进行字节查找（不区分大小写，已转换为小写）。
     private let termBytes: [[UInt8]]
     /// 用于匹配非 UTF-8 字符串。
@@ -72,6 +74,7 @@ public struct LineMatcher {
         switch mode {
         case .terms(let terms):
             regex = nil
+            useDigitByteSearch = false
             termStrings = terms
             let folded = terms.map { caseSensitive ? $0 : $0.lowercased() }
             if encoding == .utf8 {
@@ -87,6 +90,7 @@ public struct LineMatcher {
             }
         case .regex(let rx):
             regex = rx                  // 逐行解码和比较（所有编码通用）
+            useDigitByteSearch = encoding == .utf8 && rx.pattern == #"\d"#
             termBytes = []
             termStrings = []
             useByteSearch = false
@@ -100,6 +104,7 @@ public struct LineMatcher {
 
     /// 它是否与字节序列中的一行匹配？**这是主路径**（通过 10GB 的路径）。
     public func matches(_ p: UnsafePointer<UInt8>, _ length: Int) -> Bool {
+        if useDigitByteSearch { return sift_contains_decimal_digit(p, length) != 0 }
         if let regex {
             let s = decode(p, length)
             return regex.firstMatch(in: s, range: NSRange(location: 0, length: (s as NSString).length)) != nil

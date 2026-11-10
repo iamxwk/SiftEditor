@@ -21,8 +21,6 @@ final class SearchBarView: NSView, NSSearchFieldDelegate {
     static let expandedHeight: CGFloat = 366
 
     private let field = NSSearchField()
-    private let historyButton = NSButton()
-    private var historyTrailingConstraint: NSLayoutConstraint?
     private var findHistoryAutoSave = (UserDefaults.standard.object(forKey: "SiftEditor.searchHistoryAutoSave") as? Bool) ?? true
     private var snippetInsertionRange: NSRange?
     private let countLabel = NSTextField(labelWithString: "")
@@ -30,6 +28,7 @@ final class SearchBarView: NSView, NSSearchFieldDelegate {
     private let caseToggle = NSButton()
     private let regexToggle = NSButton()
     private let noRegexToggle = NSButton()
+    private var optionButtons: [FindOption: NSButton] = [:]
     private let filterToggle = NSButton()
     /// 仅显示书签行（漏斗图旁边）。与漏斗图互斥。
     private let bookmarkToggle = NSButton()
@@ -109,14 +108,6 @@ final class SearchBarView: NSView, NSSearchFieldDelegate {
         field.searchMenuTemplate = Self.makeSearchMenuTemplate()
         field.maximumRecents = 10
         normalizeRecentSearches()
-        historyButton.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: L("search.recentSearches"))
-        historyButton.imagePosition = .imageOnly
-        historyButton.isBordered = false
-        historyButton.contentTintColor = .secondaryLabelColor
-        historyButton.toolTip = L("search.recentSearches")
-        historyButton.setAccessibilityLabel(L("search.recentSearches"))
-        historyButton.target = self
-        historyButton.action = #selector(showRecentSearches)
 
         countLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         countLabel.alignment = .right
@@ -131,6 +122,7 @@ final class SearchBarView: NSView, NSSearchFieldDelegate {
         caseToggle.action = #selector(caseTapped)
         caseToggle.toolTip = L("search.tip.matchCase")
         caseToggle.setContentHuggingPriority(.required, for: .horizontal)
+        optionButtons[.matchCase] = caseToggle
 
         // 正则表达式切换 (.*)
         regexToggle.title = L("search.dialog.regex")
@@ -141,6 +133,7 @@ final class SearchBarView: NSView, NSSearchFieldDelegate {
         regexToggle.action = #selector(regexTapped)
         regexToggle.toolTip = L("search.tip.regex")
         regexToggle.setContentHuggingPriority(.required, for: .horizontal)
+        optionButtons[.regex] = regexToggle
         noRegexToggle.title = L("search.dialog.none")
         noRegexToggle.setButtonType(.radio)
         noRegexToggle.font = .systemFont(ofSize: 11)
@@ -240,13 +233,16 @@ final class SearchBarView: NSView, NSSearchFieldDelegate {
         replaceRow.isHidden = true
         self.replaceRow = replaceRow
 
-        func disabledOption(_ title: String, checked: Bool = false, radio: Bool = false) -> NSButton {
-            let button = NSButton(checkboxWithTitle: title + " *", target: nil, action: nil)
+        func disabledOption(_ option: FindOption, _ title: String, radio: Bool = false) -> NSButton {
+            let button = NSButton(checkboxWithTitle: title + " *", target: self,
+                                  action: #selector(optionTapped(_:)))
             if radio { button.setButtonType(.radio) }
             button.font = .systemFont(ofSize: 11)
             button.controlSize = .small
-            button.state = checked ? .on : .off
+            button.state = AppSettings.findOption(option) ? .on : .off
             button.isEnabled = false
+            button.identifier = NSUserInterfaceItemIdentifier(option.rawValue)
+            optionButtons[option] = button
             return button
         }
         func column(_ views: [NSView]) -> NSStackView {
@@ -290,11 +286,7 @@ final class SearchBarView: NSView, NSSearchFieldDelegate {
         findMore.widthAnchor.constraint(equalToConstant: 19).isActive = true
         let findInput = NSView()
         findInput.addSubview(field)
-        findInput.addSubview(historyButton)
         field.translatesAutoresizingMaskIntoConstraints = false
-        historyButton.translatesAutoresizingMaskIntoConstraints = false
-        let historyTrailing = historyButton.trailingAnchor.constraint(equalTo: findInput.trailingAnchor, constant: -3)
-        historyTrailingConstraint = historyTrailing
         let findRow = NSStackView(views: [findInput, findMore])
         findRow.orientation = .horizontal
         findRow.spacing = 7
@@ -302,33 +294,33 @@ final class SearchBarView: NSView, NSSearchFieldDelegate {
         divider.boxType = .separator
         divider.widthAnchor.constraint(equalToConstant: 203).isActive = true
         divider.heightAnchor.constraint(equalToConstant: 1).isActive = true
-        let wholeWord = disabledOption(L("search.dialog.wholeWord"))
+        let wholeWord = disabledOption(.wholeWord, L("search.dialog.wholeWord"))
         let leftOptions = column([
             caseToggle,
             wholeWord,
             divider,
-            disabledOption(L("search.dialog.incremental")),
-            disabledOption(L("search.dialog.allDocuments")),
-            disabledOption(L("search.dialog.selectionOnly")),
-            disabledOption(L("search.dialog.wrap"), checked: true),
-            disabledOption(L("search.dialog.showCount")),
-            disabledOption(L("search.dialog.closeAfter"))
+            disabledOption(.incremental, L("search.dialog.incremental")),
+            disabledOption(.allDocuments, L("search.dialog.allDocuments")),
+            disabledOption(.selectionOnly, L("search.dialog.selectionOnly")),
+            disabledOption(.wrap, L("search.dialog.wrap")),
+            disabledOption(.countMatches, L("search.dialog.showCount")),
+            disabledOption(.closeAfter, L("search.dialog.closeAfter"))
         ])
         leftOptions.spacing = 12.5
         leftOptions.setCustomSpacing(9.25, after: wholeWord)
         leftOptions.setCustomSpacing(9.25, after: divider)
-        let fuzzy = disabledOption(L("search.dialog.fuzzy"))
+        let fuzzy = disabledOption(.fuzzy, L("search.dialog.fuzzy"))
         let fuzzyMore = NSButton(title: "…", target: nil, action: nil)
         fuzzyMore.isEnabled = false
         fuzzyMore.controlSize = .small
         let fuzzyRow = NSStackView(views: [fuzzy, fuzzyMore])
         fuzzyRow.orientation = .horizontal
         fuzzyRow.spacing = 20
-        let escapes = disabledOption(L("search.dialog.escapes"), radio: true)
+        let escapes = disabledOption(.escapes, L("search.dialog.escapes"), radio: true)
         let rightOptions = column([
             noRegexToggle, regexToggle,
             escapes,
-            disabledOption(L("search.dialog.numberRange"), radio: true),
+            disabledOption(.numberRange, L("search.dialog.numberRange"), radio: true),
             fuzzyRow
         ])
         rightOptions.spacing = 12.5
@@ -408,10 +400,6 @@ final class SearchBarView: NSView, NSSearchFieldDelegate {
             field.trailingAnchor.constraint(equalTo: findInput.trailingAnchor),
             field.topAnchor.constraint(equalTo: findInput.topAnchor),
             field.bottomAnchor.constraint(equalTo: findInput.bottomAnchor),
-            historyTrailing,
-            historyButton.centerYAnchor.constraint(equalTo: findInput.centerYAnchor),
-            historyButton.widthAnchor.constraint(equalToConstant: 22),
-            historyButton.heightAnchor.constraint(equalToConstant: 20),
             contextField.widthAnchor.constraint(equalToConstant: 35),
             replaceField.widthAnchor.constraint(equalToConstant: 200),
             addBatch.trailingAnchor.constraint(equalTo: batch.leadingAnchor, constant: -7),
@@ -455,63 +443,14 @@ final class SearchBarView: NSView, NSSearchFieldDelegate {
         return menu
     }
 
-    private func recentSearchesMenu() -> NSMenu {
-        normalizeRecentSearches()
-        let menu = NSMenu()
-        if field.recentSearches.isEmpty {
-            let empty = NSMenuItem(title: L("search.noRecentSearches"), action: nil, keyEquivalent: "")
-            empty.isEnabled = false
-            menu.addItem(empty)
-        } else {
-            for term in Self.visibleRecentSearches(field.recentSearches) {
-                let item = NSMenuItem(title: term, action: #selector(selectRecentSearch(_:)), keyEquivalent: "")
-                item.target = self
-                item.representedObject = term
-                menu.addItem(item)
-            }
-        }
-        return menu
-    }
-
     private static func uniqueRecentSearches(_ searches: [String], limit: Int) -> [String] {
         var seen = Set<String>()
         return Array(searches.filter { seen.insert($0).inserted }.prefix(limit))
     }
 
-    /// Consecutive older prefixes are intermediate edits of the newest query.
-    /// Keep the stored history intact so those queries remain available elsewhere.
-    private static func visibleRecentSearches(_ searches: [String]) -> [String] {
-        var visible: [String] = []
-        for term in searches {
-            if let newest = visible.last,
-               normalizedHistoryPrefix(newest).hasPrefix(normalizedHistoryPrefix(term)) {
-                continue
-            }
-            visible.append(term)
-        }
-        return visible
-    }
-
-    private static func normalizedHistoryPrefix(_ term: String) -> String {
-        term.replacingOccurrences(of: #"\s+(?=[.*+?])"#, with: "", options: .regularExpression)
-    }
-
     private func normalizeRecentSearches() {
         let unique = Self.uniqueRecentSearches(field.recentSearches, limit: field.maximumRecents)
         if unique != field.recentSearches { field.recentSearches = unique }
-    }
-
-    @objc private func showRecentSearches() {
-        recentSearchesMenu().popUp(positioning: nil, at: .zero, in: field)
-    }
-
-    @objc private func selectRecentSearch(_ item: NSMenuItem) {
-        guard let term = item.representedObject as? String else { return }
-        field.stringValue = term
-        updateHistoryButtonPosition()
-        onQueryChange?(term)
-        window?.makeFirstResponder(field)
-        field.selectText(nil)
     }
 
     private func findAssistMenu() -> NSMenu {
@@ -608,7 +547,6 @@ final class SearchBarView: NSView, NSSearchFieldDelegate {
         normalizeRecentSearches()
         guard let term = field.recentSearches.first else { return }
         field.stringValue = term
-        updateHistoryButtonPosition()
         onQueryChange?(term)
         focusField()
     }
@@ -624,7 +562,6 @@ final class SearchBarView: NSView, NSSearchFieldDelegate {
         let range = snippetInsertionRange.flatMap { NSMaxRange($0) <= old.length ? $0 : nil }
             ?? NSRange(location: old.length, length: 0)
         field.stringValue = old.replacingCharacters(in: range, with: snippet)
-        updateHistoryButtonPosition()
         if !isRegex { selectRegexMode() }
         onQueryChange?(field.stringValue)
         window?.makeFirstResponder(field)
@@ -662,6 +599,14 @@ final class SearchBarView: NSView, NSSearchFieldDelegate {
     var isCaseSensitive: Bool { caseToggle.state == .on }
     var isRegex: Bool { regexToggle.state == .on }
 
+    /// 打开窗口时恢复所有选项；禁用项启用后无需另写持久化逻辑。
+    func restoreSearchOptions() {
+        for (option, button) in optionButtons {
+            button.state = AppSettings.findOption(option) ? .on : .off
+        }
+        noRegexToggle.state = isRegex ? .off : .on
+    }
+
     func selectRegexMode() {
         guard !isRegex else { return }
         regexTapped()
@@ -670,15 +615,9 @@ final class SearchBarView: NSView, NSSearchFieldDelegate {
     /// 用于检查搜索词历史记录（AppKit 标准功能）是否已启用的测试访问器。
     var _testSearchHistoryAutosaveName: String? { field.recentsAutosaveName }
     var _testSearchHistoryMenuEnabled: Bool { field.searchMenuTemplate != nil }
-    var _testHistoryDropdownEnabled: Bool { historyButton.action == #selector(showRecentSearches) }
-    var _testHistoryDropdownMenu: NSMenu { recentSearchesMenu() }
     var _testFindAssistMenu: NSMenu { findAssistMenu() }
     var _testRecentSearches: [String] { field.recentSearches }
     func _testLoadRecentSearches(_ searches: [String]) { field.recentSearches = searches }
-    func _testSelectRecentSearch(_ text: String) {
-        guard let item = recentSearchesMenu().items.first(where: { $0.title == text }) else { return }
-        selectRecentSearch(item)
-    }
     func _testInsertRegexSnippet(_ snippet: String) {
         let item = NSMenuItem(title: snippet, action: nil, keyEquivalent: "")
         item.representedObject = snippet
@@ -687,7 +626,6 @@ final class SearchBarView: NSView, NSSearchFieldDelegate {
     /// 与在搜索栏中输入文本并按 Enter 相同的路径（以确认已记录在历史记录中）。
     func _testCommitSearch(_ text: String) {
         field.stringValue = text
-        updateHistoryButtonPosition()
         enterPressed()
     }
     /// `recentsAutosaveName` 将保留为用户默认值，因此 `SearchBarView()`
@@ -768,7 +706,6 @@ final class SearchBarView: NSView, NSSearchFieldDelegate {
     /// **呼叫者负责反映主要文本中的更改**（与 `setFilterOn` 的协议相同）。
     func setQuery(_ text: String, regex: Bool, caseSensitive: Bool, filter: Bool) {
         field.stringValue = text
-        updateHistoryButtonPosition()
         regexToggle.state = regex ? .on : .off
         noRegexToggle.state = regex ? .off : .on
         caseToggle.state = caseSensitive ? .on : .off
@@ -777,10 +714,6 @@ final class SearchBarView: NSView, NSSearchFieldDelegate {
 
     func prefillFromSelection(_ text: String) {
         field.stringValue = text
-        updateHistoryButtonPosition()
-        regexToggle.state = .off
-        noRegexToggle.state = .on
-        onRegexToggle?(false)
         onQueryChange?(text)
     }
 
@@ -827,12 +760,7 @@ final class SearchBarView: NSView, NSSearchFieldDelegate {
     // MARK: - 事件
 
     func controlTextDidChange(_ obj: Notification) {
-        updateHistoryButtonPosition()
         onQueryChange?(field.stringValue)
-    }
-
-    private func updateHistoryButtonPosition() {
-        historyTrailingConstraint?.constant = field.stringValue.isEmpty ? -3 : -25
     }
 
     @objc private func enterPressed() {
@@ -859,16 +787,26 @@ final class SearchBarView: NSView, NSSearchFieldDelegate {
     @objc private func nextTapped() { rememberRecentSearch(); onNext?() }
     @objc private func prevTapped() { rememberRecentSearch(); onPrev?() }
     @objc private func closeTapped() { onClose?() }
-    @objc private func caseTapped() { onCaseToggle?(caseToggle.state == .on) }
+    @objc private func caseTapped() {
+        AppSettings.setFindOption(.matchCase, caseToggle.state == .on)
+        onCaseToggle?(caseToggle.state == .on)
+    }
     @objc private func regexTapped() {
         regexToggle.state = .on
         noRegexToggle.state = .off
+        AppSettings.setFindOption(.regex, true)
         onRegexToggle?(true)
     }
     @objc private func noRegexTapped() {
         noRegexToggle.state = .on
         regexToggle.state = .off
+        AppSettings.setFindOption(.regex, false)
         onRegexToggle?(false)
+    }
+    @objc private func optionTapped(_ sender: NSButton) {
+        guard let rawValue = sender.identifier?.rawValue,
+              let option = FindOption(rawValue: rawValue) else { return }
+        AppSettings.setFindOption(option, sender.state == .on)
     }
     @objc private func filterTapped() {
         syncContextEnabled()
@@ -905,7 +843,6 @@ final class SearchBarView: NSView, NSSearchFieldDelegate {
             onReplaceRowChange?(false)
         }
         field.stringValue = ""
-        updateHistoryButtonPosition()
         replaceField.stringValue = ""
         caseToggle.state = .off
         regexToggle.state = .off

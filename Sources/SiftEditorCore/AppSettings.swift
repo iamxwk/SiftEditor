@@ -138,6 +138,14 @@ struct SessionState: Codable {
     }
 }
 
+/// 查找框选项统一使用稳定的持久键。禁用项启用后也沿用同一读写路径。
+enum FindOption: String, CaseIterable {
+    case matchCase, wholeWord, incremental, allDocuments, selectionOnly
+    case wrap, countMatches, closeAfter, regex, escapes, numberRange, fuzzy
+
+    var defaultValue: Bool { self == .wrap }
+}
+
 /// 应用程序的持久设置（UserDefaults 聚合）。
 enum AppSettings {
     private static let defaults = UserDefaults.standard
@@ -224,6 +232,15 @@ enum AppSettings {
         set { defaults.set(newValue, forKey: searchFilterKey) }
     }
     private static func searchFilterOn(from source: UserDefaults) -> Bool { source.bool(forKey: searchFilterKey) }
+
+    static func findOption(_ option: FindOption) -> Bool {
+        let key = "SiftEditor.find.\(option.rawValue)"
+        return defaults.object(forKey: key) == nil ? option.defaultValue : defaults.bool(forKey: key)
+    }
+
+    static func setFindOption(_ option: FindOption, _ enabled: Bool) {
+        defaults.set(enabled, forKey: "SiftEditor.find.\(option.rawValue)")
+    }
 
     /// 制表符显示宽度（字符数）。默认值：4。选项：2/4/8。
     static var tabWidth: Int {

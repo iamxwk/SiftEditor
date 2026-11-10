@@ -13,6 +13,7 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
 
     private let scrollView = NSScrollView()
     private let textView = EditorTextView()
+    private var csvGridView: CSVGridView?
     /// 此窗格的编辑历史记录（按窗格存储，而不是按窗口存储。请参阅 undoManager (for:)）。
     private let paneUndoManager = UndoManager()
     private let jsonQueryBar = JsonQueryBar()
@@ -82,9 +83,10 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
     /// 仅在原始编辑状态下接受（在结构化/格式化/查询编辑期间，正文已被替换）。
     var supportsSearchFilter: Bool { structuredFormatter == nil && !jsonPrettyActive && !jsonQueryActive }
     /// 虽然只显示匹配的行，但它是只读的 = 替换的目标不再是主要文本，因此不会被接受。
-    var supportsReplace: Bool { canEdit }
+    var supportsReplace: Bool { canEditRawText }
     /// 格式化 / 查询期间只读以及仅显示匹配行时只读。
-    var canEdit: Bool { structuredFormatter == nil && !jsonPrettyActive && !jsonQueryActive && preFilterText == nil }
+    var canEdit: Bool { csvGridView != nil || (structuredFormatter == nil && !jsonPrettyActive && !jsonQueryActive && preFilterText == nil) }
+    private var canEditRawText: Bool { canEdit && csvGridView == nil }
 
     // MARK: - 结构化视图（只读格式化视图）
     private var structuredFormatter: TabularFormatter?
@@ -418,7 +420,7 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
         let bar = !jsonQueryBar.isHidden
         // 在构建结构时，会显示列名带。数字标尺是用于**原始数字**的工具，因此格式化后的显示效果将与原始数字不同。
         // 含义发生变化（使用相同的位置，但只显示其中一个）。
-        let header = structuredFormatter != nil
+        let header = structuredFormatter != nil && csvGridView == nil
         structuredHeader.isHidden = !header
         columnRuler.isHidden = !columnRulerOn || header
         for c in [scrollTopToContainer, scrollTopToBar, scrollTopToRuler, scrollTopToHeader,
@@ -465,7 +467,7 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
     /// - ⇧Tab 与之相反；它会删除直到前一个数字的空格（它不会删除空格以外的任何内容）。
     private func moveCaretToField(backwards: Bool) -> Bool {
         let guides = textView.columnGuides
-        guard canEdit else { return false }
+        guard canEditRawText else { return false }
         // **如果还没有断点，Tab 将在此处绘制。**
         // 这样做是为了省去先显示标尺再点击刻度的初步步骤。
         // （您可以通过输入 Tab → 输入 Tab 来执行数字除法）。
@@ -527,7 +529,7 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
     /// 一旦你完成排列，它就会消失（如果你把它放在一边，它就会成为风景的一部分，不会被阅读）。
     private func alignHint() -> String? {
         let guides = textView.columnGuides
-        guard guides.hasFieldBoundaries, canEdit else { return nil }
+        guard guides.hasFieldBoundaries, canEditRawText else { return nil }
         // 前几行就足够了（每次输入时不需要重新排列 8MB）。
         let sample: [String] = Array(textView.string.components(separatedBy: "\n").prefix(200))
         guard ColumnAlign.needsAlignment(sample, to: guides.fieldStarts) else { return nil }
@@ -540,7 +542,7 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
     /// 这涉及手动对齐数百行，最终打开 `awk`。
     @discardableResult
     func alignToColumnGuides() -> Bool {
-        guard canEdit else { return false }
+        guard canEditRawText else { return false }
         // **如果没有断点，请从内开始。** “首先，拿出尺子画线。”
         // 假设  正确，只有知道订单内容的人才能使用它。它会立即执行 ⌥Tab。
         if !textView.columnGuides.hasFieldBoundaries {
@@ -925,11 +927,12 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
 
     /// 用于保存和行数计算的逻辑文本。启用结构化显示时，它将返回原始文本，而不是格式化后的外观。
     /// （格式化只是显示转换，不会损坏 CSV/JSON 的内容）。
-    private var logicalText: String { preFilterText ?? preStructuredText ?? textView.string }
+    private var logicalText: String { csvGridView?.sourceIncludingPendingEdit() ?? preFilterText ?? preStructuredText ?? textView.string }
 
     /// 使用检测到的编码原子地写入当前文本。
     /// 如果检测到的编码无法表示的字符数增加，则会回退到 UTF-8。
     private func write(to url: URL) -> Bool {
+        guard csvGridView?.flushPendingEdit() != false else { return false }
         // NSTextView 在 LF 处插入换行符，因此保存时，文件中的整个文本将与 EOL 对齐。
         let s = lineEnding.normalize(logicalText)
         var enc = encoding
@@ -981,7 +984,7 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
     // MARK: - 编辑工具箱（获取选择/替换、变换/管道功能包含在这两个工具箱中。）
 
     var selectedText: String? {
-        guard canEdit else { return nil }
+        guard canEditRawText else { return nil }
         let range = textView.selectedRange()
         guard range.length > 0 else { return nil }
         return (textView.string as NSString).substring(with: range)
@@ -995,7 +998,7 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
 
     /// 替换所选内容并将其放入 NSTextView 的撤销机制中（保持替换内容被选中）。
     func replaceSelection(with text: String) {
-        guard canEdit else { NSSound.beep(); return }
+        guard canEditRawText else { NSSound.beep(); return }
         let range = textView.selectedRange()
         guard range.length > 0 else { NSSound.beep(); return }
         guard textView.shouldChangeText(in: range, replacementString: text) else { return }
@@ -1006,13 +1009,13 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
 
     // MARK: - 多光标（仅适用于 NSTextView 的非连续选择 = 仅在此窗格中）
 
-    var supportsMultiCursor: Bool { canEdit }
+    var supportsMultiCursor: Bool { canEditRawText }
     func addCaret(above: Bool) {
-        guard canEdit else { NSSound.beep(); return }
+        guard canEditRawText else { NSSound.beep(); return }
         textView.addCaret(above: above)
     }
     func selectNextOccurrence() {
-        guard canEdit else { NSSound.beep(); return }
+        guard canEditRawText else { NSSound.beep(); return }
         textView.selectNextOccurrence()
     }
 
@@ -1258,7 +1261,7 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
 
     /// 替换当前匹配项并继续。如果选择不匹配，只需搜索下一个（您可以按住前进）。
     func replaceCurrent(with replacement: String) {
-        guard canEdit else { NSSound.beep(); return }
+        guard canEditRawText else { NSSound.beep(); return }
         guard !matches.isEmpty else { NSSound.beep(); return }
         let sel = textView.selectedRange()
         guard sel.length > 0, matches.contains(where: { NSEqualRanges($0, sel) }),
@@ -1276,7 +1279,7 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
 
     /// 替换所有匹配项（撤销 1）。
     func replaceAll(with replacement: String) {
-        guard canEdit, !matches.isEmpty, let storage = textView.textStorage else { NSSound.beep(); return }
+        guard canEditRawText, !matches.isEmpty, let storage = textView.textStorage else { NSSound.beep(); return }
         var ranges: [NSRange] = []
         var strings: [String] = []
         var last = -1
@@ -1485,6 +1488,7 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
     func reEmitState() { emitState() }
 
     func focusContent() {
+        if let csvGridView { csvGridView.focusContent(); return }
         window?.makeFirstResponder(textView)
     }
 
@@ -1500,6 +1504,7 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
     }
 
     func applyCurrentFontSize() {
+        csvGridView?.applyCurrentFontSize()
         textView.font = EditorFont.current()
         applyParagraphStyle()   // 行高取决于字体，因此将重新计算。
         applySyntaxHighlight()   // bold/italic 的字体也将以新的尺寸重新制作。
@@ -1530,6 +1535,10 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
     }
 
     private func applyStructuredMode(_ mode: StructuredMode?) {
+        guard csvGridView?.flushPendingEdit() != false else { return }
+        csvGridView?.removeFromSuperview()
+        csvGridView = nil
+        scrollView.isHidden = false
         if jsonQueryActive { closeJsonQuery() }   // 如果在查询过程中切换到结构化查询，请先将其折叠。
         guard let mode else {
             // OFF: 文本可以恢复、编辑并换行至其原始状态。
@@ -1602,7 +1611,57 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
                                                      firstRowIsHeader: !(mode == .csv && generatedCSVWithoutHeader))
         textView.isEditable = false
         setWrapMode(wrapped: false)
-        renderStructured()
+        if mode == .csv || mode == .tsv {
+            do {
+                let document = try CSVGridDocument(source: source, mode: mode,
+                                                   hasHeader: !(mode == .csv && generatedCSVWithoutHeader))
+                let grid = CSVGridView(document: document)
+                grid.onChange = { [weak self] updated in self?.applyCSVGridChange(updated) }
+                grid.onPendingChange = { [weak self] in
+                    self?.setDirty(true)
+                    self?.scheduleDraftSave()
+                }
+                grid.onUndo = { [weak self] in self?.paneUndoManager.undo() }
+                grid.onRedo = { [weak self] in self?.paneUndoManager.redo() }
+                addSubview(grid)
+                NSLayoutConstraint.activate([
+                    grid.topAnchor.constraint(equalTo: topAnchor),
+                    grid.leadingAnchor.constraint(equalTo: leadingAnchor),
+                    grid.trailingAnchor.constraint(equalTo: trailingAnchor),
+                    grid.bottomAnchor.constraint(equalTo: bottomAnchor)
+                ])
+                csvGridView = grid
+                scrollView.isHidden = true
+                structuredHeader.isHidden = true
+            } catch {
+                renderStructured()
+                let alert = NSAlert()
+                alert.messageText = L("csv.invalidQuote")
+                if let window { alert.beginSheetModal(for: window) } else { NSSound.beep() }
+            }
+        } else {
+            renderStructured()
+        }
+    }
+
+    private func applyCSVGridChange(_ source: String) {
+        let previous = preStructuredText ?? textView.string
+        guard source != previous else { return }
+        paneUndoManager.registerUndo(withTarget: self) { target in target.restoreCSVGridSource(previous) }
+        preStructuredText = source
+        setDirty(true)
+        scheduleDraftSave()
+        emitState()
+    }
+
+    private func restoreCSVGridSource(_ source: String) {
+        let previous = preStructuredText ?? textView.string
+        paneUndoManager.registerUndo(withTarget: self) { target in target.restoreCSVGridSource(previous) }
+        preStructuredText = source
+        csvGridView?.updateSource(source)
+        setDirty(true)
+        scheduleDraftSave()
+        emitState()
     }
 
     /// 使用当前格式化工具重新格式化文本。**仅在更改列宽时调用此函数。**

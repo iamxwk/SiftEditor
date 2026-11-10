@@ -13,10 +13,20 @@ APP_NAME="${APP_NAME:-SiftEditor}"
 BUNDLE_ID="${BUNDLE_ID:-com.iamxwk.SiftEditor}"
 # 可执行文件名（executableTarget 是 SPM 的名称）。
 EXECUTABLE="${EXECUTABLE:-SiftEditor}"
-# 版本（嵌入 Info.plist）。可被 VERSION 覆盖，以匹配 make_dmg.sh。
-VERSION="${VERSION:-1.24.1}"
-
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# 每次成功打包递增补丁版本；正式发布仍可用 VERSION 指定版本。
+VERSION_FILE="$ROOT/VERSION"
+if [ -z "${VERSION:-}" ]; then
+    CURRENT_VERSION="$(cat "$VERSION_FILE")"
+    VERSION="$(printf '%s\n' "$CURRENT_VERSION" | awk -F. '
+        NF == 3 && $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ {
+            printf "%d.%d.%d", $1, $2, $3 + 1
+        }')"
+    if [ -z "$VERSION" ]; then
+        echo "无效的当前版本：$CURRENT_VERSION" >&2
+        exit 1
+    fi
+fi
 ICON="${ICON:-$ROOT/art/AppIcon.icns}"
 COPYRIGHT="${COPYRIGHT:-© 2026 iamxwk}"
 # 共享链路方案（sifteditor://theme?d=…）。
@@ -54,9 +64,46 @@ if [ ! -f "$ICON" ]; then
     exit 1
 fi
 
+RG_BIN="${RG_BIN:-$(command -v rg || true)}"
+if [ -z "$RG_BIN" ] || [ ! -x "$RG_BIN" ]; then
+    echo "找不到 rg；请先安装 ripgrep，或通过 RG_BIN 指定可执行文件。" >&2
+    exit 1
+fi
+for ARCH in $(lipo -archs "$BIN"); do
+    case " $(lipo -archs "$RG_BIN") " in
+        *" $ARCH "*) ;;
+        *) echo "rg 不支持 App 架构：$ARCH" >&2; exit 1 ;;
+    esac
+done
+
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/$EXECUTABLE"
+
+# Bundle the same ripgrep used in development, including its Homebrew PCRE2
+# dependency. The app must not rely on the user's PATH or Homebrew installation.
+mkdir -p "$APP/Contents/Helpers" "$APP/Contents/Frameworks"
+cp "$RG_BIN" "$APP/Contents/Helpers/rg"
+PCRE_DYLIB="$(otool -L "$RG_BIN" | awk '/libpcre2-8[.]0[.]dylib/ {print $1; exit}')"
+if [ -n "$PCRE_DYLIB" ]; then
+    for ARCH in $(lipo -archs "$BIN"); do
+        case " $(lipo -archs "$PCRE_DYLIB") " in
+            *" $ARCH "*) ;;
+            *) echo "PCRE2 不支持 App 架构：$ARCH" >&2; exit 1 ;;
+        esac
+    done
+    cp -L "$PCRE_DYLIB" "$APP/Contents/Frameworks/libpcre2-8.0.dylib"
+    install_name_tool -change "$PCRE_DYLIB" \
+        @executable_path/../Frameworks/libpcre2-8.0.dylib "$APP/Contents/Helpers/rg"
+fi
+RG_LICENSE="$(dirname "$(dirname "$(realpath "$RG_BIN")")")/LICENSE-MIT"
+if [ ! -f "$RG_LICENSE" ]; then echo "缺少 ripgrep 许可证：$RG_LICENSE" >&2; exit 1; fi
+cp "$RG_LICENSE" "$APP/Contents/Resources/RIPGREP-LICENSE"
+if [ -n "$PCRE_DYLIB" ]; then
+    PCRE_LICENSE="$(dirname "$(dirname "$(realpath "$PCRE_DYLIB")")")/LICENCE.md"
+    if [ ! -f "$PCRE_LICENSE" ]; then echo "缺少 PCRE2 许可证：$PCRE_LICENSE" >&2; exit 1; fi
+    cp "$PCRE_LICENSE" "$APP/Contents/Resources/PCRE2-LICENSE"
+fi
 
 # 包含用于本地化的资源包（由 SPM 生成）等。
 # 如果没有 ，则无法解析 Bundle.module，字符串仍显示为 key。
@@ -214,10 +261,18 @@ else
         codesign --force --options runtime --timestamp=none \
                  --sign "$SIGN_IDENTITY" "$APP/Contents/Resources/$(basename "$RESBUNDLE")"
     fi
+    if [ -f "$APP/Contents/Frameworks/libpcre2-8.0.dylib" ]; then
+        codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" \
+                 "$APP/Contents/Frameworks/libpcre2-8.0.dylib"
+    fi
+    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" \
+             "$APP/Contents/Helpers/rg"
     codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
 fi
 
 # ：确保签名一致（分发签名不一致的程序会导致程序在其他设备上崩溃）。
 codesign --verify --deep --strict "$APP"
 
+printf '%s\n' "$VERSION" > "$VERSION_FILE"
+echo "SiftEditor 版本：$VERSION"
 echo "$APP"

@@ -182,6 +182,33 @@ final class PieceTable {
         try writeNode(root, chunk: chunk, sink)
     }
 
+    /// Freeze the logical document for a background scan while edits continue.
+    /// Nodes are copied; the append buffer uses Swift's copy-on-write storage.
+    func snapshot() -> PieceTable {
+        let copy = PieceTable(original: original, locator: originalLocator,
+                              add: add, root: copyNode(root), rng: rng)
+        return copy
+    }
+
+    private init(original: PieceSource, locator: OriginalLineLocator?,
+                 add: [UInt8], root: Node?, rng: SplitMix64) {
+        self.original = original
+        self.originalLocator = locator
+        self.add = add
+        self.root = root
+        self.rng = rng
+    }
+
+    private func copyNode(_ node: Node?) -> Node? {
+        guard let node else { return nil }
+        let copy = Node(node.piece, priority: node.priority)
+        copy.left = copyNode(node.left)
+        copy.right = copyNode(node.right)
+        copy.subtreeBytes = node.subtreeBytes
+        copy.subtreeNewlines = node.subtreeNewlines
+        return copy
+    }
+
     private func writeNode(_ node: Node?, chunk: Int,
                            _ sink: (ArraySlice<UInt8>) throws -> Void) rethrows {
         guard let node = node else { return }

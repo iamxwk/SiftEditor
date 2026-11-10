@@ -19,7 +19,9 @@ enum AppInfo {
     static var version: String {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? fallbackVersion
     }
-    private static let fallbackVersion = "1.24.1"
+    private static let fallbackVersion = "development"
+
+    static var windowName: String { "\(name) \(version)" }
 
     /// 从“帮助”菜单打开项目页面。
     static let helpURL = URL(string: "https://github.com/iamxwk/SiftEditor")!

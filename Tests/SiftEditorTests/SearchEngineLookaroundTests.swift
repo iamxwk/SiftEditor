@@ -4,6 +4,24 @@ import XCTest
 /// 回归测试，以验证正则表达式环视（前瞻和后瞻）在搜索引擎中是否有效。
 /// 该引擎直接使用 `NSRegularExpression` (ICU)，因此这是为了检测 ICU 方面未来可能出现的退化而采取的措施。
 final class SearchEngineLookaroundTests: XCTestCase {
+    func testLargeFileRegexReturnsCorrectLineNumbers() throws {
+        guard RipgrepSearch.executable != nil else { throw XCTSkip("ripgrep unavailable") }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        var data = Data(repeating: 0x78, count: 16 << 20)
+        data.append(Data("\nDROP TABLE one;\nother\nDROP TABLE two;\n".utf8))
+        try data.write(to: url)
+        let engine = SearchEngine(buffer: try XCTUnwrap(FileBuffer(url: url)), encoding: .utf8)
+        let done = expectation(description: "large regex search")
+        engine.search(.regex(try NSRegularExpression(pattern: "DROP TABLE.*")),
+                      progress: { _, _ in }, completion: { result in
+            XCTAssertEqual(result.lines, [1, 3])
+            XCTAssertEqual(result.lineCount, 2)
+            XCTAssertTrue(result.isComplete)
+            done.fulfill()
+        })
+        wait(for: [done], timeout: 5)
+    }
     /// 将给定的文本写入文件，并返回与 regex 模式匹配的行号（从 0 开始）。
     private func matchingLines(_ content: String, pattern: String) -> [Int] {
         let dir = FileManager.default.temporaryDirectory

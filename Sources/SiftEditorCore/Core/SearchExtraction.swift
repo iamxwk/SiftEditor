@@ -11,12 +11,22 @@ enum SearchExtraction {
         var ignoredStrings: [String] = []
     }
 
-    static func run(url: URL?, text: String?, encoding: DetectedEncoding, query: String,
+    static func run(url: URL?, text: String?, snapshot: PieceTable? = nil,
+                    encoding: DetectedEncoding, query: String,
                     regex: Bool, caseSensitive: Bool, options: Options,
                     progress: (Double) -> Void = { _ in },
                     scanStatus: (Int, Int) -> Void = { _, _ in },
-                    cancelled: () -> Bool = { false }) throws -> String {
+                    cancelled: @escaping () -> Bool = { false }) throws -> String {
         guard !query.isEmpty else { throw FrequentStrings.Failure.invalidPattern }
+        if let snapshot {
+            let temporary = try PieceTableSnapshotFile.write(snapshot, cancelled: cancelled,
+                                                              progress: { progress($0 * 0.5) })
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            return try run(url: temporary, text: nil, encoding: encoding, query: query,
+                           regex: regex, caseSensitive: caseSensitive, options: options,
+                           progress: { progress(0.5 + $0 * 0.5) },
+                           scanStatus: scanStatus, cancelled: cancelled)
+        }
         let mode: SearchMode
         if regex {
             let flags: NSRegularExpression.Options = caseSensitive ? [] : [.caseInsensitive]
@@ -26,6 +36,19 @@ enum SearchExtraction {
             mode = .regex(expression)
         } else {
             mode = .terms(SearchMode.splitTerms(query))
+        }
+        if regex, RipgrepSearch.canUseFastPath(query),
+           encoding == .utf8, let url, text == nil,
+           options.linesBefore == 0, options.linesAfter == 0,
+           let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize),
+           size >= 16 << 20, RipgrepSearch.executable != nil {
+            do {
+                return try runWithRipgrep(url: url, query: query, caseSensitive: caseSensitive,
+                                           options: options, progress: progress,
+                                           scanStatus: scanStatus, cancelled: cancelled)
+            } catch is RipgrepSearch.Failure {
+                // Keep ICU behavior for patterns ripgrep cannot parse.
+            }
         }
         let matcher = LineMatcher(mode: mode, caseSensitive: caseSensitive, encoding: encoding)
         let outputLimit = 16 << 20
@@ -133,6 +156,51 @@ enum SearchExtraction {
             let csv = FrequentStrings.csv(Array(entries.prefix(max(1, options.maximumRows))))
             guard csv.utf8.count <= outputLimit else { throw FrequentStrings.Failure.outputTooLarge }
             return csv
+        }
+        return result
+    }
+
+    private static func runWithRipgrep(url: URL, query: String, caseSensitive: Bool,
+                                       options: Options, progress: (Double) -> Void,
+                                       scanStatus: (Int, Int) -> Void,
+                                       cancelled: @escaping () -> Bool) throws -> String {
+        let outputLimit = 16 << 20
+        let ignored = Set(options.ignoredStrings)
+        var result = ""
+        var bytes = 0
+        var counts: [String: Int] = [:]
+        var keyBytes = 0
+        var found = 0
+        var lastLine = 0
+        try RipgrepSearch.scan(url: url, pattern: query, caseSensitive: caseSensitive,
+                               cancelled: cancelled) { index, line in
+            guard line.utf8.count <= FrequentStrings.lineLimit else { throw FrequentStrings.Failure.lineTooLong }
+            found += 1
+            lastLine = index + 1
+            if options.frequent {
+                guard !line.isEmpty, !ignored.contains(line) else { return }
+                if counts[line] == nil {
+                    guard counts.count < FrequentStrings.distinctLimit else { throw FrequentStrings.Failure.tooManyValues }
+                    let length = line.utf8.count
+                    guard length <= FrequentStrings.keyBytesLimit - keyBytes else { throw FrequentStrings.Failure.tooMuchText }
+                    keyBytes += length
+                }
+                counts[line, default: 0] += 1
+            } else {
+                let cell = FrequentStrings.csvCell(line) + "\n"
+                let length = cell.utf8.count
+                guard length <= outputLimit - bytes else { throw FrequentStrings.Failure.outputTooLarge }
+                bytes += length
+                result += cell
+            }
+        }
+        progress(1)
+        scanStatus(found, lastLine)
+        if options.frequent {
+            let entries = counts.map { FrequentStrings.Entry(value: $0.key, count: $0.value) }
+                .sorted { $0.count == $1.count ? $0.value < $1.value : $0.count > $1.count }
+            result = FrequentStrings.csv(Array(entries.prefix(max(1, options.maximumRows))))
+            guard result.utf8.count <= outputLimit else { throw FrequentStrings.Failure.outputTooLarge }
         }
         return result
     }

@@ -144,7 +144,8 @@ final class SessionRestoreTests: XCTestCase {
         let v = EditableViewer()
         XCTAssertTrue(v.open(url: url))
         v.setStructuredMode(.csv)
-        XCTAssertNotEqual(v._testText, text)          // 格式化后显示
+        XCTAssertTrue(v.subviews.contains(where: { $0 is CSVGridView }))
+        XCTAssertEqual(v._testText, text)             // 表格覆盖在原始文本上，不改写文本。
         XCTAssertEqual(v.restorableText, text)         // 原始 CSV 将被保留。
     }
 }

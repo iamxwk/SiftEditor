@@ -128,6 +128,114 @@ final class FrequentStringsTests: XCTestCase {
                        "\"DROP TABLE \"\"a,b\"\";\"\n\"DROP TABLE last\"\n")
     }
 
+    func testLargeUTF8RegexExtractionUsesBundledCompatibleResult() throws {
+        guard RipgrepSearch.executable != nil else { throw XCTSkip("ripgrep unavailable") }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        var data = Data(repeating: 0x78, count: 16 << 20)
+        data.append(Data("\nDROP TABLE one;\r\nDROP TABLE two;".utf8))
+        try data.write(to: url)
+        let output = try SearchExtraction.run(url: url, text: nil, encoding: .utf8,
+                                              query: "DROP TABLE.*", regex: true,
+                                              caseSensitive: true, options: .init())
+        XCTAssertEqual(output, "\"DROP TABLE one;\"\n\"DROP TABLE two;\"\n")
+    }
+
+    func testLargeFrequentStringPrefilterMatchesICUCounts() throws {
+        guard RipgrepSearch.executable != nil else { throw XCTSkip("ripgrep unavailable") }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let sample = "DROP TABLE alpha;\r\nDROP TABLE alpha;\n192.168.1.1 a@example.com https://example.com/a\n2001:db8::1\n"
+        var data = Data(repeating: 0x78, count: 16 << 20)
+        data.append(Data("\n".utf8))
+        data.append(Data(sample.utf8))
+        try data.write(to: url)
+        for kind in [FrequentStrings.Kind.regex, .ipv4, .ipv6, .email, .url] {
+            let pattern = kind == .regex ? "DROP TABLE.*" : ""
+            let actual = try FrequentStrings.count(url: url, text: nil, encoding: .utf8,
+                                                   kind: kind, pattern: pattern, caseSensitive: false)
+            let expected = try FrequentStrings.count(url: nil, text: sample, encoding: .utf8,
+                                                     kind: kind, pattern: pattern, caseSensitive: false)
+            XCTAssertEqual(actual.map { "\($0.value):\($0.count)" },
+                           expected.map { "\($0.value):\($0.count)" }, "\(kind)")
+        }
+    }
+
+    func testLargeDigitCountingMatchesICUIncludingUnicodeDigits() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let sample = "1 2 2 ٣ ٣ ４\r\n７ 9"
+        var data = Data(repeating: 0x78, count: 16 << 20)
+        data.append(Data("\n".utf8))
+        data.append(Data(sample.utf8))
+        try data.write(to: url)
+        var progress: [Double] = []
+        let actual = try FrequentStrings.count(url: url, text: nil, encoding: .utf8,
+                                               kind: .regex, pattern: #"\d"#,
+                                               ignoredStrings: ["2"],
+                                               progress: { progress.append($0) })
+        let expected = try FrequentStrings.count(url: nil, text: sample, encoding: .utf8,
+                                                 kind: .regex, pattern: #"\d"#,
+                                                 ignoredStrings: ["2"])
+        XCTAssertEqual(actual.map { "\($0.value):\($0.count)" },
+                       expected.map { "\($0.value):\($0.count)" })
+        XCTAssertEqual(progress.last, 1)
+        XCTAssertThrowsError(try FrequentStrings.count(url: url, text: nil, encoding: .utf8,
+                                                        kind: .regex, pattern: #"\d"#,
+                                                        cancelled: { true }))
+        XCTAssertThrowsError(try FrequentStrings.count(url: url, text: nil, encoding: .utf8,
+                                                        kind: .regex, pattern: #"\d"#,
+                                                        maxMatches: 2)) { error in
+            guard case FrequentStrings.Failure.tooManyMatches(2) = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+    }
+
+    func testRegexMatchLimitStopsWithoutReturningPartialCounts() throws {
+        let input = "a1 b2 c3 d4"
+        let limited = try FrequentStrings.count(url: nil, text: input, encoding: .utf8,
+                                                kind: .regex, pattern: #"\d"#, maxMatches: 4)
+        XCTAssertEqual(limited.reduce(0) { $0 + $1.count }, 4)
+        XCTAssertThrowsError(try FrequentStrings.count(url: nil, text: input, encoding: .utf8,
+                                                        kind: .regex, pattern: #"\d"#,
+                                                        maxMatches: 3)) { error in
+            guard case FrequentStrings.Failure.tooManyMatches(3) = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+        let wholeLines = try FrequentStrings.count(url: nil, text: "a1\na1\n", encoding: .utf8,
+                                                   kind: .lines, maxMatches: 1)
+        XCTAssertEqual(wholeLines.first?.count, 2)
+    }
+
+    func testExtractionReadsUnsavedSnapshotInsteadOfDisk() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try "old\n".write(to: url, atomically: true, encoding: .utf8)
+        let table = PieceTable(bytes: Array("old\n".utf8))
+        table.insert(Array("DROP TABLE changed;\n".utf8), at: 0)
+        let snapshot = table.snapshot()
+        let output = try SearchExtraction.run(url: url, text: nil, snapshot: snapshot,
+                                              encoding: .utf8, query: "DROP TABLE.*",
+                                              regex: true, caseSensitive: true, options: .init())
+        XCTAssertEqual(output, "\"DROP TABLE changed;\"\n")
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "old\n")
+    }
+
+    func testFrequentStringsReadsUnsavedSnapshotInsteadOfDisk() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try "old\n".write(to: url, atomically: true, encoding: .utf8)
+        let table = PieceTable(bytes: Array("old\n".utf8))
+        table.insert(Array("new\nnew\n".utf8), at: 0)
+        let rows = try FrequentStrings.count(url: url, text: nil, snapshot: table.snapshot(),
+                                             encoding: .utf8, kind: .lines)
+        XCTAssertEqual(rows.first?.value, "new")
+        XCTAssertEqual(rows.first?.count, 2)
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "old\n")
+    }
+
     func testSearchExtractionReportsCompletedProgress() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: url) }
@@ -173,6 +281,50 @@ final class FrequentStringsTests: XCTestCase {
         XCTAssertTrue(zip(rows, rows.dropFirst()).allSatisfy { $0.count >= $1.count })
     }
 
+    func testRealFrequentRegexWhenProvided() throws {
+        guard let path = ProcessInfo.processInfo.environment["SIFTEDITOR_FREQUENT_FILE"] else {
+            throw XCTSkip("No large sample supplied")
+        }
+        let url = URL(fileURLWithPath: path)
+        let started = Date()
+        let fast = try FrequentStrings.count(url: url, text: nil, encoding: .utf8,
+                                             kind: .regex, pattern: "DROP TABLE.*", limit: 1000,
+                                             caseSensitive: false)
+        let fastSeconds = Date().timeIntervalSince(started)
+        let baselineStarted = Date()
+        let baseline = try FrequentStrings.count(url: url, text: nil, encoding: .utf8,
+                                                 kind: .regex, pattern: "(?:DROP TABLE).*", limit: 1000,
+                                                 caseSensitive: false)
+        let baselineSeconds = Date().timeIntervalSince(baselineStarted)
+        XCTAssertEqual(fast.map { "\($0.value):\($0.count)" },
+                       baseline.map { "\($0.value):\($0.count)" })
+        print("Frequent regex: \(String(format: "%.2f", fastSeconds)) s vs ICU \(String(format: "%.2f", baselineSeconds)) s, \(fast.count) values")
+    }
+
+    func testRealDigitCountingWhenProvided() throws {
+        guard let path = ProcessInfo.processInfo.environment["SIFTEDITOR_FREQUENT_FILE"] else {
+            throw XCTSkip("No large sample supplied")
+        }
+        let started = Date()
+        let url = URL(fileURLWithPath: path)
+        XCTAssertThrowsError(try FrequentStrings.count(url: url, text: nil,
+                                                        encoding: .utf8, kind: .regex,
+                                                        pattern: #"\d"#, limit: 1000)) { error in
+            guard case FrequentStrings.Failure.tooManyMatches(FrequentStrings.defaultMatchLimit) = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+        print("Frequent \\d limit: \(String(format: "%.2f", Date().timeIntervalSince(started))) s")
+        let fullStarted = Date()
+        let rows = try FrequentStrings.count(url: url, text: nil,
+                                             encoding: .utf8, kind: .regex,
+                                             pattern: #"\d"#, limit: 1000,
+                                             maxMatches: 1_000_000_000)
+        XCTAssertFalse(rows.isEmpty)
+        XCTAssertTrue(zip(rows, rows.dropFirst()).allSatisfy { $0.count >= $1.count })
+        print("Frequent \\d full: \(String(format: "%.2f", Date().timeIntervalSince(fullStarted))) s, \(rows.reduce(0) { $0 + $1.count }) matches")
+    }
+
     func testRealSearchExtractionWhenProvided() throws {
         guard let path = ProcessInfo.processInfo.environment["SIFTEDITOR_EXTRACT_FILE"] else {
             throw XCTSkip("No large extraction sample supplied")
@@ -191,4 +343,25 @@ final class FrequentStringsTests: XCTestCase {
         print("Search extraction: \(String(format: "%.2f", fastSeconds)) s vs full regex \(String(format: "%.2f", baselineSeconds)) s, \(result.utf8.count) bytes")
         XCTAssertTrue(result.contains("DROP TABLE"))
     }
+
+    func testRealDigitLineExtractionWhenProvided() throws {
+        guard let path = ProcessInfo.processInfo.environment["SIFTEDITOR_EXTRACT_FILE"] else {
+            throw XCTSkip("No large extraction sample supplied")
+        }
+        let url = URL(fileURLWithPath: path)
+        var options = SearchExtraction.Options()
+        options.frequent = true
+        let started = Date()
+        let fast = try SearchExtraction.run(url: url, text: nil, encoding: .utf8,
+                                            query: #"\d"#, regex: true,
+                                            caseSensitive: false, options: options)
+        let fastSeconds = Date().timeIntervalSince(started)
+        let baselineStarted = Date()
+        let baseline = try SearchExtraction.run(url: url, text: nil, encoding: .utf8,
+                                                query: #"(?:\d)"#, regex: true,
+                                                caseSensitive: false, options: options)
+        XCTAssertEqual(fast, baseline)
+        print("Digit matching lines: \(String(format: "%.2f", fastSeconds)) s vs ICU \(String(format: "%.2f", Date().timeIntervalSince(baselineStarted))) s")
+    }
+
 }

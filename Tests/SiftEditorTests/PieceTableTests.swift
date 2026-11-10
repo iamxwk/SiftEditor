@@ -83,6 +83,17 @@ private struct LCG: RandomNumberGenerator {
 }
 
 final class PieceTableTests: XCTestCase {
+    func testSnapshotKeepsUnsavedBytesAfterFurtherEdits() {
+        let table = PieceTable(bytes: Array("alpha\nbeta\n".utf8))
+        table.insert(Array("new ".utf8), at: 6)
+        let frozen = table.snapshot()
+        table.delete(0..<6)
+        table.insert(Array("other\n".utf8), at: 0)
+        var frozenBytes: [UInt8] = []
+        frozen.writeAll { frozenBytes.append(contentsOf: $0) }
+        XCTAssertEqual(String(decoding: frozenBytes, as: UTF8.self), "alpha\nnew beta\n")
+        XCTAssertNotEqual(table.bytes(in: 0..<table.byteCount), frozenBytes)
+    }
 
     private func bytes(_ s: String) -> [UInt8] { Array(s.utf8) }
 

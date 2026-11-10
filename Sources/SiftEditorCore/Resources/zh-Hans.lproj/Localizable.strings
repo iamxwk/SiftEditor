@@ -114,10 +114,6 @@
 "menu.structured.ndjson" = "NDJSON";
 "menu.structured.json" = "JSON";
 "menu.structured.fixedWidth" = "固定宽度";
-"structured.banner" = "结构化视图（只读）";
-"structured.revert" = "返回原始文本";
-"structured.hint" = "格式仅供显示。文件保持不变（保存时仍为原始 CSV/JSON）。";
-"structured.presetsButton" = "视图预设…";
 "menu.jsonquery" = "JSON 查询...";
 "menu.columnRuler" = "列标尺";
 "menu.columnRuler.fields" = "列字段定义…";
@@ -313,6 +309,7 @@
 "search.useRegex" = "使用正则表达式";
 "search.searchLiterally" = "逐字搜索";
 "search.noMatches" = "未找到匹配的行。";
+"search.snapshotFailed" = "无法搜索尚未保存的文档。";
 "extract.progressTitle" = "正在提取";
 "extract.elapsed" = "已用时：%@ 秒";
 "extract.searching" = "正在搜索：%@";
@@ -614,12 +611,15 @@
 "frequent.ascending" = "按次数升序";
 "frequent.run" = "提取";
 "frequent.scanning" = "正在统计字符串…";
+"frequent.maximumMatches" = "最大匹配数：";
+"frequent.matchStatus" = "已匹配 %d / %d 次";
 "frequent.cancelHint" = "原始文档不会更改。如果取消，扫描将停止。";
 "frequent.saveFirst" = "请保存这个大文档，然后将其聚合。";
 "frequent.failed" = "无法提取常用字符串";
 "frequent.error.pattern" = "请输入有效的非空正则表达式。";
 "frequent.error.line" = "某些行大于 64 MB。";
 "frequent.error.values" = "超过 500,000 个不同的值。";
+"frequent.error.matches" = "匹配次数超过 %d，已停止统计，未生成不完整结果。可调高“最大匹配数”后重试。";
 "frequent.error.memory" = "不同字符串超过 2 GB 内存限制。请缩小提取范围。";
 "frequent.error.read" = "无法读取原始文件。";
 "frequent.error.encoding" = "尚不支持 UTF-16 文件聚合。";
@@ -639,3 +639,6 @@
 "status.tip.previousMismatch" = "跳转到上一处不匹配的行";
 "status.tip.nextMismatch" = "跳转到下一处不匹配的行";
 "status.tip.nextColumnMismatch" = "点击跳转到下一处列数不一致的行";
+"csv.cell" = "单元格";
+"csv.applyCell" = "应用";
+"csv.invalidQuote" = "此 CSV 存在未闭合的引号字段，已保留在只读结构化视图中。";

@@ -16,15 +16,18 @@ private final class ExtractionProgressSheet: NSObject {
     private let startedAt = ProcessInfo.processInfo.systemUptime
     private var searchStatus: NSTextField?
     private let totalLines: Int?
+    private let matchingLimit: Int?
     private var timer: Timer?
+    private var showTimer: Timer?
 
     init(window: NSWindow, progress: Progress, title: String,
-         showSearchStatus: Bool = false, totalLines: Int? = nil) {
+         showSearchStatus: Bool = false, totalLines: Int? = nil, matchingLimit: Int? = nil) {
         parent = window
         self.progress = progress
         self.totalLines = totalLines
+        self.matchingLimit = matchingLimit
         sheet = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 440,
-                                            height: showSearchStatus ? 205 : 175),
+                                            height: showSearchStatus || matchingLimit != nil ? 205 : 175),
                         styleMask: [.titled], backing: .buffered, defer: false)
         super.init()
         sheet.title = L("extract.progressTitle")
@@ -43,7 +46,7 @@ private final class ExtractionProgressSheet: NSObject {
             view.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(view)
         }
-        if showSearchStatus {
+        if showSearchStatus || matchingLimit != nil {
             let status = NSTextField(labelWithString: "")
             status.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview(status)
@@ -53,7 +56,8 @@ private final class ExtractionProgressSheet: NSObject {
                 status.trailingAnchor.constraint(equalTo: caption.trailingAnchor),
                 status.topAnchor.constraint(equalTo: caption.bottomAnchor, constant: 12),
             ])
-            reportSearch(found: 0, line: 0)
+            if matchingLimit != nil { reportMatches(0) }
+            else { reportSearch(found: 0, line: 0) }
         }
         NSLayoutConstraint.activate([
             caption.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
@@ -62,7 +66,7 @@ private final class ExtractionProgressSheet: NSObject {
             indicator.leadingAnchor.constraint(equalTo: caption.leadingAnchor),
             indicator.trailingAnchor.constraint(equalTo: percentage.leadingAnchor, constant: -12),
             indicator.topAnchor.constraint(equalTo: searchStatus?.bottomAnchor ?? caption.bottomAnchor,
-                                           constant: showSearchStatus ? 20 : 22),
+                                           constant: showSearchStatus || matchingLimit != nil ? 20 : 22),
             indicator.heightAnchor.constraint(equalToConstant: 16),
             percentage.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
             percentage.centerYAnchor.constraint(equalTo: indicator.centerYAnchor),
@@ -72,12 +76,17 @@ private final class ExtractionProgressSheet: NSObject {
             cancel.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
             cancel.topAnchor.constraint(equalTo: elapsed.bottomAnchor, constant: 9),
         ])
-        window.beginSheet(sheet)
-        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in self?.update() }
+        showTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: false) { [weak self] _ in
+            guard let self, let parent = self.parent else { return }
+            parent.beginSheet(self.sheet)
+            self.timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in self?.update() }
+        }
     }
 
     func finish() {
         update()
+        showTimer?.invalidate()
+        showTimer = nil
         timer?.invalidate()
         timer = nil
         if let parent, parent.attachedSheet === sheet { parent.endSheet(sheet) }
@@ -92,6 +101,11 @@ private final class ExtractionProgressSheet: NSObject {
         } else {
             searchStatus.stringValue = L("extract.searchStatus", found, line)
         }
+    }
+
+    func reportMatches(_ count: Int) {
+        guard let searchStatus, let matchingLimit else { return }
+        searchStatus.stringValue = L("frequent.matchStatus", count, matchingLimit)
     }
 
     private func update() {
@@ -123,9 +137,9 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
     private let statusBar = StatusBarView()
     private let searchBar = SearchBarView()
     private var searchExtractOptions = SearchExtraction.Options()
+    private var extractOptionsOpening = false
     private var searchPanel: NSPanel?
     private let readOnlyBanner = ReadOnlyBanner()
-    private let structuredBanner = StructuredBanner()
     private let externalBanner = ExternalChangeBanner()
 
     // MARK: - 导入外部更改
@@ -188,7 +202,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = AppInfo.name
+        window.title = AppInfo.windowName
         window.center()
         window.setFrameAutosaveName("SiftEditorMainWindow")
         window.tabbingMode = .disallowed
@@ -310,8 +324,12 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
         searchBar.onNext = { [weak self] in self?.activeViewer?.findNext() }
         searchBar.onPrev = { [weak self] in self?.activeViewer?.findPrev() }
         searchBar.onClose = { [weak self] in self?.hideSearch() }
-        searchBar.onCaseToggle = { [weak self] on in self?.activeViewer?.setCaseSensitive(on) }
-        searchBar.onRegexToggle = { [weak self] on in self?.activeViewer?.setRegexMode(on) }
+        searchBar.onCaseToggle = { [weak self] on in
+            self?.activeViewer?.setCaseSensitive(on)
+        }
+        searchBar.onRegexToggle = { [weak self] on in
+            self?.activeViewer?.setRegexMode(on)
+        }
         searchBar.onFilterToggle = { [weak self] on in
             // 仅当用户点击时才显示匹配的行。对于普通搜索，保留文本内容，并高亮显示匹配项。
             // 为了导出兼容性，这些设置将被保留，但在启动 ⌘F 时不会自动应用。
@@ -354,22 +372,6 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
             readOnlyBanner.heightAnchor.constraint(equalToConstant: ReadOnlyBanner.height),
         ])
         addDraggable("readonly", readOnlyBanner, horizontal: roLeading, .leading, vertical: roTop, .leading)
-
-        // 结构化文本横幅（位于主文本区域左上角；仅在启用结构化文本时显示。单击“恢复”即可恢复正常显示。）
-        structuredBanner.translatesAutoresizingMaskIntoConstraints = false
-        structuredBanner.isHidden = true
-        structuredBanner.onRevert = { [weak self] in self?.setActiveStructuredMode(nil) }
-        structuredBanner.onPresetTapped = { [weak self] in self?.presentViewPresets() }
-        content.addSubview(structuredBanner)
-        // 浮动在右上角（不会遮挡左侧标题栏）。它与搜索栏位于同一角落，因此默认情况下……
-        // 将搜索栏向下移动（如下图 searchBarTopConstraint 所示）。两者均可拖动和移动。
-        let stTop = structuredBanner.topAnchor.constraint(equalTo: viewerContainer.topAnchor, constant: 10)
-        let stTrailing = structuredBanner.trailingAnchor.constraint(equalTo: viewerContainer.trailingAnchor, constant: -28)
-        NSLayoutConstraint.activate([
-            stTop, stTrailing,
-            structuredBanner.heightAnchor.constraint(equalToConstant: StructuredBanner.height),
-        ])
-        addDraggable("structured", structuredBanner, horizontal: stTrailing, .trailing, vertical: stTop, .leading)
 
         // 外部变更横幅（位于主文本区域底部。顶部包含搜索栏、只读部分和结构化文本。）
         externalBanner.translatesAutoresizingMaskIntoConstraints = false
@@ -515,9 +517,9 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// EmEditor-style extraction: configure the scan, then show a CSV report in a new document.
     func extractFrequentStrings() {
         guard let source = activeViewer, let window else { return }
-        // A dirty large-file pane has no in-memory text snapshot. Reading its URL would count
-        // the old disk version while the editor displays unsaved changes.
-        if source.isDirty && source.restorableText == nil {
+        // Freeze unsaved edits so counting reads the displayed document, not an older disk file.
+        let snapshot = (source as? PieceTableViewer)?.extractionSnapshot()
+        if source.isDirty && source.restorableText == nil && snapshot == nil {
             let warning = NSAlert()
             warning.messageText = L("frequent.saveFirst")
             warning.beginSheetModal(for: window)
@@ -531,17 +533,23 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         let task = Progress(totalUnitCount: 1000)
         let waiting = ExtractionProgressSheet(window: window, progress: task,
-                                              title: L("frequent.scanning"))
+                                              title: L("frequent.scanning"),
+                                              matchingLimit: options.kind == .regex ? options.maximumMatches : nil)
         let inputURL = source.fileURL
         let inputText = source.restorableText
         let inputEncoding = source.currentEncoding
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Result {
-                try FrequentStrings.count(url: inputURL, text: inputText, encoding: inputEncoding,
-                                          kind: options.kind, pattern: options.pattern, limit: options.maximumRows,
+                try FrequentStrings.count(url: inputURL, text: inputText, snapshot: snapshot,
+                                          encoding: inputEncoding,
+                                          kind: options.kind, pattern: options.pattern,
+                                          limit: options.maximumRows, maxMatches: options.maximumMatches,
                                           caseSensitive: options.caseSensitive,
                                           ignoredStrings: options.ignoredStrings,
                                           progress: { task.completedUnitCount = Int64($0 * 1000) },
+                                          matchProgress: { count in
+                                              DispatchQueue.main.async { waiting.reportMatches(count) }
+                                          },
                                           cancelled: { task.isCancelled })
             }
             DispatchQueue.main.async {
@@ -559,9 +567,18 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func showExtractOptions() {
-        let dialog = ExtractOptionsPanel(options: searchExtractOptions)
-        if let updated = dialog.show() { searchExtractOptions = updated }
-        searchPanel?.makeKeyAndOrderFront(nil)
+        guard !extractOptionsOpening else { return }
+        extractOptionsOpening = true
+        // Enter the modal loop after the button event has returned. Starting a
+        // nested modal loop inside that event makes the Find panel feel stalled.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            defer { self.extractOptionsOpening = false }
+            guard self.searchPanel?.isVisible == true else { return }
+            let dialog = ExtractOptionsPanel(options: self.searchExtractOptions)
+            if let updated = dialog.show() { self.searchExtractOptions = updated }
+            self.searchPanel?.makeKeyAndOrderFront(nil)
+        }
     }
 
     private func extractSearchResults() {
@@ -588,14 +605,15 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
             default: return
             }
         }
-        if source.isDirty && source.restorableText == nil {
+        let sourcePane = activeViewer as? PieceTableViewer
+        let snapshot = sourcePane?.extractionSnapshot()
+        if source.isDirty && source.restorableText == nil && snapshot == nil {
             let warning = NSAlert()
             warning.messageText = L("frequent.saveFirst")
             warning.beginSheetModal(for: window)
             return
         }
         let task = Progress(totalUnitCount: 1000)
-        let sourcePane = activeViewer as? PieceTableViewer
         let progressParent = (searchPanel?.isVisible == true ? searchPanel : nil) ?? window
         let waiting = ExtractionProgressSheet(window: progressParent, progress: task,
                                               title: L("extract.searching", query),
@@ -610,7 +628,8 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
         let suspendedSearch = sourcePane?.suspendSearchForExtraction() ?? false
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let result = Result {
-                try SearchExtraction.run(url: inputURL, text: inputText, encoding: inputEncoding,
+                try SearchExtraction.run(url: inputURL, text: inputText, snapshot: snapshot,
+                                         encoding: inputEncoding,
                                          query: query, regex: isRegex, caseSensitive: caseSensitive,
                                          options: options,
                                          progress: { task.completedUnitCount = Int64($0 * 1000) },
@@ -644,7 +663,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
         guard let pane = activeViewer as? EditableViewer else { return }
         pane.setGeneratedCSVText(text, hasHeader: hasHeader, title: title)
         reloadSidebar()
-        window?.title = displayName(of: pane) + " — " + AppInfo.name
+        window?.title = displayName(of: pane) + " — " + AppInfo.windowName
         setActiveStructuredMode(.csv)
     }
 
@@ -653,6 +672,10 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
         alert.messageText = L("frequent.failed")
         let key: String
         switch error {
+        case FrequentStrings.Failure.tooManyMatches(let limit):
+            alert.informativeText = L("frequent.error.matches", limit)
+            alert.beginSheetModal(for: window)
+            return
         case FrequentStrings.Failure.invalidPattern: key = "frequent.error.pattern"
         case FrequentStrings.Failure.lineTooLong: key = "frequent.error.line"
         case FrequentStrings.Failure.tooManyValues: key = "frequent.error.values"
@@ -1132,12 +1155,12 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
     }
     /// 当前文档是否可编辑？（用于启用编辑工具箱菜单）。
-    var canTransformText: Bool { activeViewer?.canEdit ?? false }
+    var canTransformText: Bool { activeViewer?.canEdit == true && activeViewer?.structuredMode == nil }
     /// 能否与数字导板对齐（可编辑且已绘制分隔符）？
     /// 即使没有中断，你也可以从内部创建它，所以**如果你能编辑它，你就能按下它**。
     var canAlignToColumnGuides: Bool {
         guard let v = activeViewer as? EditableViewer else { return false }
-        return v.canEdit
+        return v.canEdit && v.structuredMode == nil
     }
 
     /// 分配数字引导线时，对齐选定的范围（如果未选择任何范围，则对齐整个文本）。
@@ -1148,7 +1171,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     /// 将编辑工具箱中的转换应用于选定的活动文档。
     func applyActiveTextTransform(_ transform: TextTransform) {
-        guard let v = activeViewer, v.canEdit else { NSSound.beep(); return }
+        guard let v = activeViewer, canTransformText else { NSSound.beep(); return }
         v.applyTextTransform(transform)
     }
 
@@ -1397,18 +1420,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
         if searchPanel?.isVisible == true {
             if v.supportsSearch { refreshSearchBarCapabilities() } else { hideSearch() }
         }
-        updateStructuredBanner()
         updateReadOnlyBanner()
-    }
-
-    /// 更新结构化显示横幅的显示设置（仅在结构化时显示）。
-    private func updateStructuredBanner() {
-        if let mode = activeStructuredMode {
-            structuredBanner.configure(mode: mode)
-            structuredBanner.isHidden = false
-        } else {
-            structuredBanner.isHidden = true
-        }
     }
 
     /// 将状态/搜索/拖放处理程序连接到每个查看器（仅在激活时反映）。
@@ -1459,9 +1471,8 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
         v.reEmitState()                            // 将状态栏更新为当前状态
         statusBar.setMismatchCount(v.columnMismatchCount)
         sidebar.setActive(index)
-        window?.title = displayName(of: v) + " — " + AppInfo.name
+        window?.title = displayName(of: v) + " — " + AppInfo.windowName
         updateEditedState()
-        updateStructuredBanner()
         updateReadOnlyBanner()
         updateExternalBanner()
         v.focusContent()
@@ -1548,7 +1559,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
         if viewers.isEmpty {
             activeIndex = -1
             reloadSidebar()
-            window?.title = AppInfo.name
+            window?.title = AppInfo.windowName
             statusBar.setPlaceholder()
             updateEditedState()
             updateReadOnlyBanner()
@@ -1743,7 +1754,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         reloadSidebar()
         if activeViewer === v {
-            window?.title = displayName(of: v) + " — " + AppInfo.name
+            window?.title = displayName(of: v) + " — " + AppInfo.windowName
         }
         updateEditedState()
         persistSession()   // 保存时 URL 可能确定或改变，因此更新列表
@@ -1894,6 +1905,9 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
         if wasHidden {
             searchBar.setFilterOn(false)
             v.setFilterMode(false)
+            searchBar.restoreSearchOptions()
+            v.setCaseSensitive(searchBar.isCaseSensitive)
+            v.setRegexMode(searchBar.isRegex)
         }
         if let panel = searchPanel, !panel.isVisible {
             if let screen = window?.screen ?? NSScreen.main {
@@ -1961,11 +1975,6 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 将结构化视图的列顺序和宽度应用到当前窗格。
     public func applyViewPreset(order: [String], widths: [String: Int]) {
         activeViewer?.applyStructuredLayout(order: order, widths: widths)
-    }
-
-    /// 视图预设尚未实现；标题栏中的入口保持禁用。
-    private func presentViewPresets() {
-        NSSound.beep()
     }
 
     /// 在正文下方插入分析窗格（使用 nil 删除）。**core 不知道其内容。**

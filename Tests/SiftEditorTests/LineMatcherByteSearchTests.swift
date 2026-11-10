@@ -8,6 +8,50 @@ import XCTest
 /// 由于它们重叠，简单的字节比较必然会导致错误。
 final class LineMatcherByteSearchTests: XCTestCase {
 
+    func testUTF8DigitRegexMatchesICUAcrossUnicodeAndInvalidBytes() throws {
+        let expression = try NSRegularExpression(pattern: #"\d"#)
+        let matcher = LineMatcher(mode: .regex(expression), caseSensitive: false, encoding: .utf8)
+        let samples = ["plain text", "a0", "٣", "４", "७", "𝟠", "字だけ", ""]
+        for sample in samples {
+            let bytes = Array(sample.utf8)
+            let expected = expression.firstMatch(in: sample,
+                range: NSRange(sample.startIndex..<sample.endIndex, in: sample)) != nil
+            XCTAssertEqual(bytes.withUnsafeBufferPointer { matcher.matches($0) }, expected, sample)
+        }
+        let invalid = [UInt8]([0xF0, 0x28, 0x8C, 0x28, 0x39])
+        XCTAssertTrue(invalid.withUnsafeBufferPointer { matcher.matches($0) })
+    }
+
+    func testRealDigitLineSearchWhenProvided() throws {
+        guard let path = ProcessInfo.processInfo.environment["SIFTEDITOR_EXTRACT_FILE"] else {
+            throw XCTSkip("No large search sample supplied")
+        }
+        guard let buffer = FileBuffer(url: URL(fileURLWithPath: path)) else {
+            throw XCTSkip("Large search sample unavailable")
+        }
+        func count(_ pattern: String) throws -> (Int, Double) {
+            let expression = try NSRegularExpression(pattern: pattern)
+            let matcher = LineMatcher(mode: .regex(expression), caseSensitive: false, encoding: .utf8)
+            let started = Date()
+            var found = 0
+            buffer.withBytes(in: 0..<buffer.count) { raw in
+                guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
+                var start = 0
+                while start < raw.count {
+                    let newline = memchr(base + start, 0x0A, raw.count - start)
+                    let end = newline.map { UnsafeRawPointer($0) - UnsafeRawPointer(base) } ?? raw.count
+                    if matcher.matches(base + start, end - start) { found += 1 }
+                    start = newline == nil ? raw.count : end + 1
+                }
+            }
+            return (found, Date().timeIntervalSince(started))
+        }
+        let fast = try count(#"\d"#)
+        let baseline = try count(#"(?:\d)"#)
+        XCTAssertEqual(fast.0, baseline.0)
+        print("Digit live search: \(String(format: "%.2f", fast.1)) s vs ICU \(String(format: "%.2f", baseline.1)) s, \(fast.0) lines")
+    }
+
     private func sjis(_ s: String) -> [UInt8] { [UInt8](s.data(using: .shiftJIS)!) }
     private func euc(_ s: String) -> [UInt8] { [UInt8](s.data(using: .japaneseEUC)!) }
 

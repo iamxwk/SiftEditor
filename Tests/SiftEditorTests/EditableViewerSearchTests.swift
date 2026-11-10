@@ -330,9 +330,7 @@ extension EditableViewerSearchTests {
 
     // MARK: 在过滤过程中输入结构化数据（顺序错误的陷阱）
 
-    /// 如果在筛选器 ON 仍处于选中状态时切换到结构化视图，则格式化结果将消失。
-    /// 显示筛选前的原始文本（筛选后仅保留列名横幅和行号）。
-    /// 格式化之前筛选器已折叠，因此现在显示所有行的格式化结果。
+    /// 从过滤结果切换到 CSV 表格时，应恢复完整源数据再构建表格。
     func testStructuredFromFilteredShowsFormattedWholeFile() {
         let csv = "id,level,note\n1,INFO,ok\n2,ERROR,boom\n3,INFO,ok\n"
         let v = viewer(csv)
@@ -342,12 +340,14 @@ extension EditableViewerSearchTests {
 
         v.setStructuredMode(.csv)
 
-        XCTAssertNil(v.filterMatchLines, "整形の前にフィルタを畳むこと")
+        XCTAssertNil(v.filterMatchLines, "进入表格前应退出过滤模式")
         XCTAssertEqual(v.structuredMode, .csv)
-        XCTAssertTrue(v._testText.contains("│"), "整形されていること（生テキストのままにしない）")
-        for row in ["1", "2", "3"] {
-            XCTAssertTrue(v._testText.contains("\(row)  "), "全行が出ていること（\(row) 行目）")
+        guard let grid = v.subviews.compactMap({ $0 as? CSVGridView }).first else {
+            return XCTFail("CSV 表格未显示")
         }
+        XCTAssertEqual(grid.document.rowCount, 3)
+        XCTAssertEqual(grid.document.columnNames, ["id", "level", "note"])
+        XCTAssertEqual((0..<3).map { grid.document.value(row: $0, column: 0) }, ["1", "2", "3"])
     }
 
     /// 折叠后，再进行非结构化处理，即可恢复为原始文本（不保留任何过滤痕迹）。
