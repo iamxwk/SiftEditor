@@ -136,6 +136,8 @@ final class DropView: NSView {
 public final class MainWindowController: NSWindowController, NSWindowDelegate {
     private let statusBar = StatusBarView()
     private let searchBar = SearchBarView()
+    private var selectAllStatusPending = false
+    private var selectAllMessageTimer: Timer?
     private var searchExtractOptions = SearchExtraction.Options()
     private var extractOptionsOpening = false
     private var searchPanel: NSPanel?
@@ -292,6 +294,22 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
         statusBar.onMismatchPrev = { [weak self] in
             self?.activeViewer?.jumpToPrevMismatchLine()
         }
+        statusBar.onSyntaxChosen = { [weak self] syntax in
+            guard let self, let active = self.activeViewer as? EditableViewer else { return }
+            let ext = active.fileURL?.pathExtension.lowercased()
+            active.setSyntax(syntax)
+            if let ext, !ext.isEmpty {
+                for viewer in self.viewers where viewer !== active && viewer.fileURL?.pathExtension.lowercased() == ext {
+                    (viewer as? EditableViewer)?.setSyntax(syntax, rememberExtension: false)
+                }
+            }
+        }
+        statusBar.onEncodingChosen = { [weak self] encoding in
+            self?.activeViewer?.setSaveEncoding(encoding)
+        }
+        statusBar.onLineEndingChosen = { [weak self] ending in
+            (self?.activeViewer as? EditableViewer)?.setLineEnding(ending)
+        }
 
         // 搜索栏应放置在单独的面板中，并使其可移动到主窗口之外。
         let panel = SearchBarPanel(contentRect: NSRect(x: 0, y: 0, width: 576, height: SearchBarView.height),
@@ -305,6 +323,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
         panel.orderOut(nil)
         searchPanel = panel
         searchBar.onQueryChange = { [weak self] q in
+            self?.clearSelectAllStatus()
             self?.endBookmarkViewIfNeeded()
             self?.activeViewer?.setSearchQuery(q)
         }
@@ -323,11 +342,19 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
         }
         searchBar.onNext = { [weak self] in self?.activeViewer?.findNext() }
         searchBar.onPrev = { [weak self] in self?.activeViewer?.findPrev() }
+        searchBar.onSelectAll = { [weak self] in
+            guard let self, let viewer = self.activeViewer else { return }
+            let result = viewer.selectAllSearchMatches()
+            self.selectAllStatusPending = result == .pending
+            self.showSelectAllStatus(result, progress: 0)
+        }
         searchBar.onClose = { [weak self] in self?.hideSearch() }
         searchBar.onCaseToggle = { [weak self] on in
+            self?.clearSelectAllStatus()
             self?.activeViewer?.setCaseSensitive(on)
         }
         searchBar.onRegexToggle = { [weak self] on in
+            self?.clearSelectAllStatus()
             self?.activeViewer?.setRegexMode(on)
         }
         searchBar.onFilterToggle = { [weak self] on in
@@ -1423,16 +1450,47 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
         updateReadOnlyBanner()
     }
 
+    private func showSelectAllStatus(_ result: SearchSelectAllOutcome, progress: Int) {
+        selectAllMessageTimer?.invalidate()
+        selectAllMessageTimer = nil
+        statusBar.showMessage(StatusBarView.searchSelectAllText(result, progress: progress))
+        guard result != .pending else { return }
+        selectAllMessageTimer = Timer.scheduledTimer(withTimeInterval: 6, repeats: false) { [weak self] _ in
+            self?.clearSelectAllStatus()
+        }
+    }
+
+    private func clearSelectAllStatus() {
+        guard selectAllStatusPending || selectAllMessageTimer != nil else { return }
+        selectAllStatusPending = false
+        selectAllMessageTimer?.invalidate()
+        selectAllMessageTimer = nil
+        statusBar.clearMessage()
+        activeViewer?.reEmitState()
+    }
+
     /// 将状态/搜索/拖放处理程序连接到每个查看器（仅在激活时反映）。
     private func wire(_ v: DocumentPane) {
         v.onStateChange = { [weak self, weak v] state in
             guard let self, self.activeViewer === v else { return }
             self.statusBar.update(state)
+            self.updateStatusOptions()
         }
         v.onSearchState = { [weak self, weak v] cur, tot, searching, prog, invalid, capped in
             guard let self, self.activeViewer === v else { return }
             self.searchBar.setCount(current: cur, total: tot, searching: searching,
                                     progress: prog, invalid: invalid, capped: capped)
+            if self.selectAllStatusPending {
+                if searching {
+                    self.showSelectAllStatus(.pending, progress: prog)
+                } else {
+                    self.selectAllStatusPending = false
+                    let result: SearchSelectAllOutcome = v?.hasSelectedSearchMatches == true
+                        ? .selectedLines(tot)
+                        : invalid ? .unavailable : capped ? .capped : .noMatches
+                    self.showSelectAllStatus(result, progress: prog)
+                }
+            }
         }
         v.onDropFiles = { [weak self] urls in urls.forEach { self?.open(url: $0) } }
         v.onDirtyChange = { [weak self, weak v] dirty in
@@ -1462,6 +1520,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
     /// 激活指定索引中的文档。
     private func activate(_ index: Int) {
         guard index >= 0, index < viewers.count else { return }
+        clearSelectAllStatus()
         if searchPanel?.isVisible == true { hideSearch() }   // 切换时关闭搜索。
         // AI 该面板常驻显示（即使切换文档也不会消失）。它可以直接分析对其他文档的选择。
         for (i, v) in viewers.enumerated() { v.isHidden = (i != index) }
@@ -1469,6 +1528,7 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
         let v = viewers[index]
         v.ensureVisibleLayout()                    // 确保在文本隐藏时，插入的文本能够正确呈现。
         v.reEmitState()                            // 将状态栏更新为当前状态
+        updateStatusOptions()
         statusBar.setMismatchCount(v.columnMismatchCount)
         sidebar.setActive(index)
         window?.title = displayName(of: v) + " — " + AppInfo.windowName
@@ -1477,6 +1537,22 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
         updateExternalBanner()
         v.focusContent()
         persistSession()
+    }
+
+    private func updateStatusOptions() {
+        guard let pane = activeViewer else {
+            statusBar.setDocumentOptions(syntax: nil, encoding: nil, ending: nil,
+                                         canChangeSyntax: false, canChangeEncoding: false, canChangeEnding: false)
+            return
+        }
+        let editable = pane as? EditableViewer
+        let large = pane as? PieceTableViewer
+        statusBar.setDocumentOptions(syntax: editable?.currentSyntax ?? .text,
+                                     encoding: pane.currentSaveEncoding,
+                                     ending: editable?.currentLineEnding ?? large?.currentLineEnding ?? .lf,
+                                     canChangeSyntax: editable != nil,
+                                     canChangeEncoding: pane.canEdit,
+                                     canChangeEnding: editable != nil)
     }
 
     /// 更新只读横幅的显示设置和文本。
@@ -2055,8 +2131,14 @@ public final class MainWindowController: NSWindowController, NSWindowDelegate {
 
     func hideSearch() {
         searchPanel?.orderOut(nil)
+        if selectAllStatusPending { clearSelectAllStatus() }
         if let v = activeViewer {
             v.setFilterMode(false)
+            if v.hasSelectedSearchMatches {
+                v.focusContent()
+                updateReadOnlyBanner()
+                return
+            }
             v.setRegexMode(false)
             v.setCaseSensitive(false)
             v.setSearchQuery("")

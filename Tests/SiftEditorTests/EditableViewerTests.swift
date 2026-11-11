@@ -9,6 +9,28 @@ final class EditableViewerTests: XCTestCase {
             .appendingPathComponent("sifteditor-ev-\(UUID().uuidString).txt")
     }
 
+    func testChosenSyntaxPersistsForSameExtension() throws {
+        let key = "SiftEditor.syntax.extensionOverrides"
+        let saved = UserDefaults.standard.object(forKey: key)
+        defer {
+            if let saved { UserDefaults.standard.set(saved, forKey: key) }
+            else { UserDefaults.standard.removeObject(forKey: key) }
+        }
+        let ext = "module"
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sifteditor-ev-\(UUID().uuidString).\(ext)")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try "<?php echo 1;".write(to: url, atomically: true, encoding: .utf8)
+
+        let first = EditableViewer()
+        XCTAssertTrue(first.open(url: url))
+        first.setSyntax(.php)
+        let second = EditableViewer()
+        XCTAssertTrue(second.open(url: url))
+        XCTAssertEqual(second.currentSyntax, .php)
+        XCTAssertNotNil(second._testMarkdownColor(at: 2))
+    }
+
     // MARK: 以指定编码重新打开
 
     /// 即使以  / Shift-JIS 写入的文件被错误地以 UTF-8 的形式打开，也可以通过指定重新打开方法正确读取。
@@ -71,6 +93,19 @@ final class EditableViewerTests: XCTestCase {
 
         let saved = try Data(contentsOf: url)
         XCTAssertEqual(saved, "x\r\ny\r\nz".data(using: .utf8)) // 全行 CRLF
+    }
+
+    func testStatusBarLineEndingChoiceConvertsWholeSmallDocumentOnSave() throws {
+        let url = tempURL()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try "a\nb\n".write(to: url, atomically: true, encoding: .utf8)
+        let viewer = EditableViewer()
+        XCTAssertTrue(viewer.open(url: url))
+        viewer.setLineEnding(.crlf)
+        XCTAssertEqual(viewer.currentLineEnding, .crlf)
+        XCTAssertTrue(viewer.isDirty)
+        XCTAssertTrue(viewer._testWrite(to: url))
+        XCTAssertEqual(try Data(contentsOf: url), Data("a\r\nb\r\n".utf8))
     }
 
     // MARK: 结构化显示是一种仅用于显示的转换（保存时不会损坏内容）。

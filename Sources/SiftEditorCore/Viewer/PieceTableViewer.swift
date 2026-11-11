@@ -160,6 +160,8 @@ final class PieceTableViewer: NSView, DocumentPane {
     private var searchResults = SearchEngine.Result()
     private var currentMatchIdx = -1
     private var currentMatchLine = -1
+    private var allSearchMatchesSelected = false
+    private var selectAllWhenSearchCompletes = false
     private var searchDebounce: DispatchWorkItem?
     private var searchEpoch = 0
 
@@ -545,6 +547,7 @@ final class PieceTableViewer: NSView, DocumentPane {
     var currentEncoding: DetectedEncoding { encoding }
     /// 保存时使用的编码。用于指示“文本编码”菜单中的复选框。
     var currentSaveEncoding: DetectedEncoding { saveEncoding }
+    var currentLineEnding: LineEnding { lineEnding }
 
     /// 设置保存编码（暂不导出。设置为 dirty，并在下次保存时转换）。
     func setSaveEncoding(_ enc: DetectedEncoding) {
@@ -706,6 +709,7 @@ final class PieceTableViewer: NSView, DocumentPane {
                 }
             }
         }
+        updateSearchSelections()
         documentView.needsDisplay = true
 
         syncColumnRuler()
@@ -769,6 +773,7 @@ final class PieceTableViewer: NSView, DocumentPane {
 
     /// 为行内匹配的部分添加背景颜色（仅限可见行，无需全局索引）。
     private func highlightMatches(in attr: NSMutableAttributedString, text: String) {
+        guard !allSearchMatchesSelected else { return }
         for r in matchRanges(in: text) { attr.addAttribute(.backgroundColor, value: matchHighlight, range: r) }
     }
 
@@ -859,6 +864,26 @@ final class PieceTableViewer: NSView, DocumentPane {
         syncColumnRuler()   // 当跟随光标水平移动时，刻度上的数值会相应变化。
     }
 
+    /// 搜索结果只保存匹配行；选区范围仅为可见行计算，不按文件大小分配内存。
+    private func updateSearchSelections() {
+        guard allSearchMatchesSelected else {
+            documentView.searchSelectionsByRow = [:]
+            return
+        }
+        var rows: [Int: [DocumentView.RowSelection]] = [:]
+        for row in documentView.lines.indices {
+            let line = filterMode ? (documentView.lineNumbers?[row] ?? -1) : topLine + row
+            guard line >= 0 else { continue }
+            let index = firstMatchIndex(after: line - 1)
+            guard index < searchResults.lines.count, searchResults.lines[index] == line else { continue }
+            let ranges = matchRanges(in: documentView.lines[row].string)
+            if !ranges.isEmpty {
+                rows[row] = ranges.map { DocumentView.RowSelection(range: $0, extendsToLineEnd: false) }
+            }
+        }
+        documentView.searchSelectionsByRow = rows
+    }
+
     /// 将行 `lineStart` 到 `byteOffset` 的内容转换为该行字符串中 UTF-16 的偏移量。
     private func utf16Index(lineStart: Int, byteOffset: Int) -> Int {
         guard byteOffset > lineStart else { return 0 }
@@ -880,6 +905,7 @@ final class PieceTableViewer: NSView, DocumentPane {
 
     private func handleMouseDown(_ e: NSEvent) {
         guard let b = byteAt(event: e) else { return }
+        clearAllSearchMatchSelection()
         switch e.clickCount {
         case 2: selectWord(at: b)      // 双击 = 选择单词
         case 3: selectLine(at: b)      // 三击 = 行选择
@@ -1132,6 +1158,7 @@ final class PieceTableViewer: NSView, DocumentPane {
         selectionAnchor = min(max(0, newAnchor), pt.byteCount)
         caretGoalColumn = nil
         let wasClean = !isDirty
+        clearAllSearchMatchSelection()
         setDirty(true)
         if wasClean && !preserveSearchOnEdit { stopSearchAndFollowForEdit() }   // 可通过编辑禁用搜索和关注功能。
         showCaretNow()
@@ -1448,6 +1475,10 @@ final class PieceTableViewer: NSView, DocumentPane {
 
     /// 将选定范围复制为纯文本，如果不存在可见范围，则复制可见范围。
     private func copySelectionOrVisible() {
+        if allSearchMatchesSelected {
+            copyAllSearchMatches()
+            return
+        }
         let text: String
         if let sel = selectionRange {
             let capped = sel.lowerBound..<min(sel.upperBound, sel.lowerBound + 32 * 1024 * 1024)
@@ -1459,6 +1490,34 @@ final class PieceTableViewer: NSView, DocumentPane {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(text, forType: .string)
+    }
+
+    private func copyAllSearchMatches() {
+        guard let output = allSearchMatchesText() else { NSSound.beep(); return }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(output, forType: .string)
+    }
+
+    private func allSearchMatchesText() -> String? {
+        let maxCopyBytes = 32 * 1024 * 1024
+        var output = ""
+        var copiedBytes = 0
+        for line in searchResults.lines {
+            guard let range = lineRanges(from: line, count: 1).first else { continue }
+            let source = decodeLineString(range) as NSString
+            for match in matchRanges(in: source as String) {
+                let value = source.substring(with: match)
+                let nextBytes = value.utf8.count + (output.isEmpty ? 0 : 1)
+                guard copiedBytes + nextBytes <= maxCopyBytes else {
+                    return nil
+                }
+                if !output.isEmpty { output.append("\n") }
+                output.append(value)
+                copiedBytes += nextBytes
+            }
+        }
+        return output.isEmpty ? nil : output
     }
 
     // MARK: - 滚动/按键输入（B1 仅支持滚动）
@@ -1550,6 +1609,9 @@ final class PieceTableViewer: NSView, DocumentPane {
     func setPreserveCase(_ on: Bool) { preserveCase = on }
 
     private func rebuildSearch() {
+        allSearchMatchesSelected = false
+        selectAllWhenSearchCompletes = false
+        documentView.searchSelectionsByRow = [:]
         searchBusy = false
         searchResults.isComplete = false     // 不要使用前一个单词的结果来延长长度。
         searchEpoch += 1
@@ -1652,6 +1714,10 @@ final class PieceTableViewer: NSView, DocumentPane {
         }, completion: { [weak self] res in
             guard let self, self.searchEpoch == epoch else { return }
             self.searchResults = res
+            if self.selectAllWhenSearchCompletes {
+                self.selectAllWhenSearchCompletes = false
+                _ = self.selectAllSearchMatches()
+            }
             if self.filterMode { self.rebuildFilterDisplayLines(); self.rebuildStructuredColumns(); self.refresh() }
             self.emitSearchState(searching: false, progress: 100, invalid: false)
         })
@@ -1678,6 +1744,8 @@ final class PieceTableViewer: NSView, DocumentPane {
     }
 
     private func clearSearchState() {
+        clearAllSearchMatchSelection()
+        selectAllWhenSearchCompletes = false
         searchQuery = ""; searchTerms = []; searchRegex = nil
         filterMode = false; searchResults = .init()
         filterDisplayLines = []; filterIsExplicit = false
@@ -1839,7 +1907,7 @@ final class PieceTableViewer: NSView, DocumentPane {
             current = currentMatchIdx >= 0 ? currentMatchIdx + 1 : 0
         }
         // 总计数是准确的，因为它还包括超过上限的行（上限仅适用于“可移动匹配行”）。
-        onSearchState?(current, total, searching, progress, invalid, false)
+        onSearchState?(current, total, searching, progress, invalid, searchResults.capped)
     }
 
     /// 筛选时“下一个／上一个匹配”的显示行。未显示前后 N 行时，每个匹配占一行，
@@ -1873,6 +1941,7 @@ final class PieceTableViewer: NSView, DocumentPane {
     }
 
     func findNext() {
+        clearAllSearchMatchSelection()
         if filterMode {
             guard !searchResults.lines.isEmpty else { NSSound.beep(); return }
             if let row = filterMatchRow(forward: true) { setTopLine(row) } else { setTopLine(topLine + 1) }
@@ -1886,6 +1955,7 @@ final class PieceTableViewer: NSView, DocumentPane {
     }
 
     func findPrev() {
+        clearAllSearchMatchSelection()
         if filterMode {
             guard !searchResults.lines.isEmpty else { NSSound.beep(); return }
             if let row = filterMatchRow(forward: false) { setTopLine(row) } else { setTopLine(topLine - 1) }
@@ -1904,6 +1974,29 @@ final class PieceTableViewer: NSView, DocumentPane {
         setTopLine(searchResults.lines[idx])
         emitSearchState(searching: !searchResults.isComplete,
                         progress: searchResults.isComplete ? 100 : 0, invalid: false)
+    }
+
+    func selectAllSearchMatches() -> SearchSelectAllOutcome {
+        guard !searchQuery.isEmpty else { return .unavailable }
+        guard searchResults.isComplete else {
+            selectAllWhenSearchCompletes = true
+            return .pending
+        }
+        guard !searchResults.capped else { return .capped }
+        guard !searchResults.lines.isEmpty else { return .noMatches }
+        allSearchMatchesSelected = true
+        window?.makeFirstResponder(documentView)
+        refresh()
+        return .selectedLines(searchResults.lineCount)
+    }
+
+    var hasSelectedSearchMatches: Bool { allSearchMatchesSelected }
+
+    private func clearAllSearchMatchSelection() {
+        guard allSearchMatchesSelected else { return }
+        allSearchMatchesSelected = false
+        documentView.searchSelectionsByRow = [:]
+        documentView.needsDisplay = true
     }
 
     /// 如果编辑结果为 dirty，则停止搜索、跟踪和筛选（因为文档将与 mmap 不同）。
@@ -2317,6 +2410,9 @@ extension PieceTableViewer {
     /// 当前使用的列宽。这用于验证列宽是否与筛选器中显示的行一致。
     var _testStructuredColumnWidths: [Int] { structuredFormatter?.columns.map(\.width) ?? [] }
     var _testSelection: Range<Int>? { selectionRange }
+    var _testSelectedSearchRows: [Int: [DocumentView.RowSelection]] { documentView.searchSelectionsByRow }
+    var _testSelectedSearchText: String? { allSearchMatchesText() }
+    func _testCopy() { copySelectionOrVisible() }
 
     // 選択（B7）
     func _testSelectWord(at byte: Int) { selectWord(at: byte) }

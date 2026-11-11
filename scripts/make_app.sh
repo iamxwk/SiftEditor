@@ -114,6 +114,7 @@ fi
 # 包含应用图标；可用 ICON 覆盖默认图标。
 cp "$ICON" "$APP/Contents/Resources/AppIcon.icns"
 cp "$ROOT/LICENSE" "$APP/Contents/Resources/LICENSE"
+cp -R "$ROOT/ThirdPartyLicenses" "$APP/Contents/Resources/"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

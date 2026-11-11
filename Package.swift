@@ -15,10 +15,13 @@ let package = Package(
         // 该核心在测试中也用作 SearchBenchCLI。
         .library(name: "SiftEditorCore", targets: ["SiftEditorCore"])
     ],
+    dependencies: [
+        .package(url: "https://github.com/CreatureSurvive/SwiftHighlight.git", revision: "6e405acc136ab9ee0f6584d28d73cb62a30ee246"),
+    ],
     targets: [
         .target(
             name: "SiftEditorCore",
-            dependencies: ["SiftDigitScanner"],
+            dependencies: ["SiftDigitScanner", "SwiftHighlight"],
             path: "Sources/SiftEditorCore",
             resources: [
                 .process("Resources")

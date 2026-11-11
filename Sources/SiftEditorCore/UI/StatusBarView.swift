@@ -5,6 +5,29 @@ final class StatusBarView: NSView {
     static let height: CGFloat = 24
 
     private let label = NSTextField(labelWithString: "")
+    var onSyntaxChosen: ((EditorSyntax) -> Void)?
+    var onEncodingChosen: ((DetectedEncoding) -> Void)?
+    var onLineEndingChosen: ((LineEnding) -> Void)?
+
+    private let syntaxPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let encodingPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let endingPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private lazy var optionsStack: NSStackView = {
+        let stack = NSStackView(views: [syntaxPopup, encodingPopup, endingPopup])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 5
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+            syntaxPopup.widthAnchor.constraint(equalToConstant: 120),
+            encodingPopup.widthAnchor.constraint(equalToConstant: 105),
+            endingPopup.widthAnchor.constraint(equalToConstant: 95),
+        ])
+        return stack
+    }()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -31,13 +54,67 @@ final class StatusBarView: NSView {
         label.lineBreakMode = .byTruncatingMiddle
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
+        setupOptions()
         applyTheme()
         NSLayoutConstraint.activate([
             label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -10),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: optionsStack.leadingAnchor, constant: -8),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
         setPlaceholder()
+    }
+
+    private func setupOptions() {
+        for popup in [syntaxPopup, encodingPopup, endingPopup] {
+            popup.controlSize = .mini
+            popup.font = .systemFont(ofSize: 11)
+            popup.isBordered = false
+        }
+        for syntax in EditorSyntax.allCases {
+            syntaxPopup.addItem(withTitle: syntax.title)
+            syntaxPopup.lastItem?.representedObject = syntax.rawValue
+        }
+        for encoding in DetectedEncoding.selectable {
+            encodingPopup.addItem(withTitle: encoding.displayName)
+            encodingPopup.lastItem?.representedObject = encoding.displayName
+        }
+        for ending in [LineEnding.lf, .crlf, .cr] {
+            endingPopup.addItem(withTitle: ending.displayName)
+            endingPopup.lastItem?.representedObject = ending.displayName
+        }
+        syntaxPopup.target = self; syntaxPopup.action = #selector(syntaxChosen)
+        encodingPopup.target = self; encodingPopup.action = #selector(encodingChosen)
+        endingPopup.target = self; endingPopup.action = #selector(endingChosen)
+        optionsStack.isHidden = true
+    }
+
+    func setDocumentOptions(syntax: EditorSyntax?, encoding: DetectedEncoding?, ending: LineEnding?,
+                            canChangeSyntax: Bool, canChangeEncoding: Bool, canChangeEnding: Bool) {
+        optionsStack.isHidden = syntax == nil || isShowingMessage && onCancel != nil
+        guard let syntax, let encoding, let ending else { return }
+        syntaxPopup.selectItem(withTitle: syntax.title)
+        encodingPopup.selectItem(withTitle: encoding.displayName)
+        endingPopup.selectItem(withTitle: ending.displayName)
+        syntaxPopup.isEnabled = canChangeSyntax
+        encodingPopup.isEnabled = canChangeEncoding
+        endingPopup.isEnabled = canChangeEnding
+    }
+
+    @objc private func syntaxChosen() {
+        guard let raw = syntaxPopup.selectedItem?.representedObject as? String,
+              let syntax = EditorSyntax(rawValue: raw) else { return }
+        onSyntaxChosen?(syntax)
+    }
+    @objc private func encodingChosen() {
+        let index = encodingPopup.indexOfSelectedItem
+        guard DetectedEncoding.selectable.indices.contains(index) else { return }
+        onEncodingChosen?(DetectedEncoding.selectable[index])
+    }
+    @objc private func endingChosen() {
+        let endings: [LineEnding] = [.lf, .crlf, .cr]
+        let index = endingPopup.indexOfSelectedItem
+        guard endings.indices.contains(index) else { return }
+        onLineEndingChosen?(endings[index])
     }
 
     override var isFlipped: Bool { true }
@@ -99,7 +176,7 @@ final class StatusBarView: NSView {
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            stack.trailingAnchor.constraint(equalTo: optionsStack.leadingAnchor, constant: -8),
             stack.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
         return stack
@@ -153,6 +230,7 @@ final class StatusBarView: NSView {
         label.stringValue = text
         self.onCancel = onCancel
         cancelButton.isHidden = false
+        optionsStack.isHidden = true
     }
     /// 仅更新已保存消息的文本。
     func updateSaving(_ text: String) {
@@ -166,6 +244,18 @@ final class StatusBarView: NSView {
         isShowingMessage = false
         onCancel = nil
         cancelButton.isHidden = true
+        optionsStack.isHidden = false
+    }
+
+    static func searchSelectAllText(_ result: SearchSelectAllOutcome, progress: Int = 0) -> String {
+        switch result {
+        case .selectedMatches(let count): return L("search.selectAll.selectedMatches", formatNumber(count))
+        case .selectedLines(let count): return L("search.selectAll.selectedLines", formatNumber(count))
+        case .pending: return L("search.selectAll.searching", progress)
+        case .noMatches: return L("search.selectAll.noMatches")
+        case .capped: return L("search.selectAll.capped")
+        case .unavailable: return L("search.selectAll.unavailable")
+        }
     }
 
     func update(_ state: ViewerState) {

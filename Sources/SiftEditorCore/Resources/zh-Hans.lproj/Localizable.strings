@@ -65,6 +65,10 @@
 
 /* Status bar */
 "status.placeholder" = "拖动文件或使用 ⌘O 打开";
+"syntax.textFile" = "纯文本";
+"status.ending.lf" = "Unix (LF)";
+"status.ending.crlf" = "Windows (CRLF)";
+"status.ending.cr" = "旧版 Mac (CR)";
 "status.lines" = "%@ 行";
 "status.linesApprox" = "约 %@ 行";
 "status.indexing" = "正在建立索引… %d%%";
@@ -297,6 +301,12 @@
 "search.countCapped" = "第 %1$@ 个，共至少 %2$@ 个";
 "search.searching" = "正在搜索… %d%%";
 "search.stillSearching" = "%1$@ · %2$d%%";
+"search.selectAll.selectedMatches" = "已选择 %@ 个匹配项";
+"search.selectAll.selectedLines" = "已选择 %@ 个匹配行中的匹配项";
+"search.selectAll.searching" = "正在选择匹配项…搜索进度 %d%%";
+"search.selectAll.noMatches" = "没有可选择的匹配项";
+"search.selectAll.capped" = "匹配项过多，无法全部选择";
+"search.selectAll.unavailable" = "当前无法选择全部匹配项";
 "search.replacePlaceholder" = "替换为";
 "search.replace" = "替换";
 "search.replaceAll" = "全部替换";

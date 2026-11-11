@@ -8,6 +8,15 @@ import XCTest
 /// 已切换至“13 件商品”，**即使扫描仍在进行中，也显示已确认**。1GB
 /// 此后文件中的条目数量继续增加，所以这几乎肯定是谎言。
 final class SearchCountTextTests: XCTestCase {
+    func testSelectAllStatusMessages() {
+        XCTAssertEqual(StatusBarView.searchSelectAllText(.selectedMatches(3)),
+                       L("search.selectAll.selectedMatches", "3"))
+        XCTAssertEqual(StatusBarView.searchSelectAllText(.selectedLines(587)),
+                       L("search.selectAll.selectedLines", "587"))
+        XCTAssertEqual(StatusBarView.searchSelectAllText(.pending, progress: 42),
+                       L("search.selectAll.searching", 42))
+        XCTAssertEqual(StatusBarView.searchSelectAllText(.noMatches), L("search.selectAll.noMatches"))
+    }
 
     private func text(current: Int = 0, total: Int, searching: Bool, progress: Int = 0,
                       invalid: Bool = false, capped: Bool = false) -> String {

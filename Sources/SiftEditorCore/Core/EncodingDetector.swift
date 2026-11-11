@@ -38,6 +38,14 @@ enum LineEnding {
     case crlf    // \r\n（Windows）
     case cr      // \r（旧 Mac）
 
+    var displayName: String {
+        switch self {
+        case .lf: return L("status.ending.lf")
+        case .crlf: return L("status.ending.crlf")
+        case .cr: return L("status.ending.cr")
+        }
+    }
+
     var bytes: [UInt8] {
         switch self {
         case .lf: return [0x0A]

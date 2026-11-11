@@ -65,6 +65,10 @@
 
 /* Status bar */
 "status.placeholder" = "Drag a file here, or press ⌘O to open";
+"syntax.textFile" = "Text File";
+"status.ending.lf" = "Unix (LF)";
+"status.ending.crlf" = "Windows (CRLF)";
+"status.ending.cr" = "Legacy Mac (CR)";
 "status.lines" = "%@ lines";
 "status.linesApprox" = "~%@ lines";
 "status.indexing" = "Indexing… %d%%";
@@ -297,6 +301,12 @@
 "search.countCapped" = "%1$@ of %2$@+";
 "search.searching" = "Searching… %d%%";
 "search.stillSearching" = "%1$@ · %2$d%%";
+"search.selectAll.selectedMatches" = "Selected %@ matches";
+"search.selectAll.selectedLines" = "Selected matches in %@ lines";
+"search.selectAll.searching" = "Selecting matches… Searching %d%%";
+"search.selectAll.noMatches" = "No matches to select";
+"search.selectAll.capped" = "Too many matches to select";
+"search.selectAll.unavailable" = "Select All is unavailable";
 "search.replacePlaceholder" = "Replace with";
 "search.replace" = "Replace";
 "search.replaceAll" = "Replace All";

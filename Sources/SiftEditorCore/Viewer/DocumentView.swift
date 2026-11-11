@@ -71,6 +71,8 @@ final class DocumentView: NSView {
     /// `extendsToLineEnd` 指示选区是否跨越换行符延伸到行尾（将选区延伸到右边缘）。
     struct RowSelection { var range: NSRange; var extendsToLineEnd: Bool }
     var selectionByRow: [Int: RowSelection] = [:]
+    /// 多个查找匹配项的可见选区；与普通拖拽选区分开保存。
+    var searchSelectionsByRow: [Int: [RowSelection]] = [:]
     private var selectionColor = EditorTheme.current().selection
 
     /// 用于绘制辅助线的数字（从 1 开始）。如果为空，则不绘制。
@@ -283,6 +285,14 @@ final class DocumentView: NSView {
                 let origin = NSPoint(x: contentX - xOff, y: y)
                 layout.enumerateSelectionRects(sel.range, extendToEnd: sel.extendsToLineEnd,
                                                origin: origin, viewWidth: bounds.width) { NSBezierPath(rect: $0).fill() }
+            }
+            if let selections = searchSelectionsByRow[i] {
+                selectionColor.setFill()
+                let origin = NSPoint(x: contentX - xOff, y: y)
+                for sel in selections {
+                    layout.enumerateSelectionRects(sel.range, extendToEnd: false,
+                                                   origin: origin, viewWidth: bounds.width) { NSBezierPath(rect: $0).fill() }
+                }
             }
 
             // 正文（将所有换行部分绘制在一起。对于未换行的部分，减去水平偏移量）

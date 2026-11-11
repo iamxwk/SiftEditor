@@ -5,6 +5,34 @@ import AppKit
 /// B2b（文本变体 + Undo/Redo + Cut/Paste）将以 document 为单位进行无头验证。
 /// 不要设置  / GUI，而是通过 `PieceTableViewer` 的测试接缝驱动编辑管道。
 final class PieceTableViewerEditTests: XCTestCase {
+    func testSelectAllFindMatchesInLargeViewerAndCopy() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try "DROP TABLE one;\nother\nDROP TABLE two;\n".write(to: url, atomically: true, encoding: .utf8)
+        let viewer = PieceTableViewer(frame: NSRect(x: 0, y: 0, width: 500, height: 300))
+        XCTAssertTrue(viewer.open(url: url))
+        let loaded = Date().addingTimeInterval(5)
+        while viewer._testDocString.isEmpty, Date() < loaded {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        viewer.setRegexMode(true)
+        let found = expectation(description: "find both matching lines")
+        viewer.onSearchState = { _, total, searching, _, _, _ in
+            if !searching && total == 2 { found.fulfill() }
+        }
+        viewer.setSearchQuery("DROP TABLE.*")
+        XCTAssertEqual(viewer.selectAllSearchMatches(), .pending) // 搜索尚未完成时也应在完成后自动选中。
+        wait(for: [found], timeout: 5)
+        viewer.onSearchState = nil
+        XCTAssertTrue(viewer.hasSelectedSearchMatches)
+        XCTAssertEqual(viewer._testSelectedSearchRows.count, 2)
+        XCTAssertEqual(viewer._testSelectedSearchText, "DROP TABLE one;\nDROP TABLE two;")
+        viewer._testCopy()
+        XCTAssertEqual(NSPasteboard.general.string(forType: .string), "DROP TABLE one;\nDROP TABLE two;")
+        viewer.findNext()
+        XCTAssertFalse(viewer.hasSelectedSearchMatches)
+        XCTAssertTrue(viewer._testSelectedSearchRows.isEmpty)
+    }
     func testFindSearchesUnsavedLargeViewerSnapshotAndRefreshesAfterEdit() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: url) }

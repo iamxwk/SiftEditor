@@ -106,6 +106,14 @@ final class EditableViewerSearchTests: XCTestCase {
         XCTAssertEqual(v._testMatchCount, 0)
     }
 
+    func testSelectAllFindMatchesKeepsSeparateSelections() {
+        let v = viewer("alpha beta alpha\n")
+        v.setSearchQuery("alpha")
+        XCTAssertEqual(v.selectAllSearchMatches(), .selectedMatches(2))
+        XCTAssertEqual(v._testSelectedMatchRanges, [NSRange(location: 0, length: 5),
+                                                    NSRange(location: 11, length: 5)])
+    }
+
     /// 空格分隔的条目捕获每个单词的所有出现（按文本顺序排列）。
     func testMultipleTermsAreCollectedInDocumentOrder() {
         let v = viewer("alpha beta\n")

@@ -1,4 +1,5 @@
 import AppKit
+import SwiftHighlight
 
 /// 小文件编辑窗格。将整个文件加载到内存中并使用 `NSTextView`
 /// 编辑（撤销、IME、选择和标准复制由标准 AppKit 功能处理）。
@@ -13,6 +14,12 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
 
     private let scrollView = NSScrollView()
     private let textView = EditorTextView()
+    private var highlightGeneration = 0
+    private var highlightTask: DispatchWorkItem?
+    private var highlightedSyntax: EditorSyntax?
+    private var highlightSpans: [SwiftSyntaxEngine.Span]?
+    private var paintedSyntaxRange: NSRange?
+    private var chosenSyntax: EditorSyntax?
     private var csvGridView: CSVGridView?
     /// 此窗格的编辑历史记录（按窗格存储，而不是按窗口存储。请参阅 undoManager (for:)）。
     private let paneUndoManager = UndoManager()
@@ -667,6 +674,12 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
 
     deinit { NotificationCenter.default.removeObserver(self) }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil else { return }
+        DispatchQueue.main.async { [weak self] in self?.repaintVisibleSyntax() }
+    }
+
     // MARK: - 起始索引（行号间距和光标位置的共享缓存）
 
     /// 当前显示文本中每行开头的索引。如果未找到，则重新计数并缓存。
@@ -692,6 +705,7 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
         syncColumnRuler()                               // 使刻度跟随水平滚动条移动。
         syncStructuredHeader()                          // 还会显示带有列名称的横幅。
         if !matches.isEmpty { applySearchHighlight() }   // 我会重新发送，因为我只会涂可见区域。
+        repaintVisibleSyntax()
     }
 
     /// 光标位置（起始行和列为 1）。选中后，光标指向选区的起始位置。
@@ -707,6 +721,24 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
 
     var currentEncoding: DetectedEncoding { encoding }
     var currentSaveEncoding: DetectedEncoding { encoding }
+    var currentSyntax: EditorSyntax { chosenSyntax ?? EditorSyntax.forFile(fileURL) }
+    var currentLineEnding: LineEnding { lineEnding }
+
+    func setSyntax(_ syntax: EditorSyntax, rememberExtension: Bool = true) {
+        chosenSyntax = syntax
+        if rememberExtension, let ext = fileURL?.pathExtension.lowercased(), !ext.isEmpty {
+            AppSettings.setSyntaxLanguage(syntax, forExtension: ext)
+        }
+        applySyntaxHighlight()
+        emitState()
+    }
+
+    func setLineEnding(_ ending: LineEnding) {
+        guard lineEnding != ending else { return }
+        lineEnding = ending
+        setDirty(true)
+        emitState()
+    }
 
     /// 使用指定的编码重新打开当前文件（修正自动编码错误导致的乱码）。已编辑的内容将被丢弃。
     @discardableResult
@@ -732,6 +764,7 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
             text = String(decoding: data, as: UTF8.self)
         }
         self.fileURL = url
+        self.chosenSyntax = nil
         self.draftID = nil          // 打开实际文件的窗格中没有 draft
         self.userChosenEncoding = forcedEncoding
         self.encoding = detected
@@ -838,6 +871,7 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
     /// 从上次会话中恢复一个未保存的新文档及其正文（路径未确定）。
     func restoreUntitled(text: String, dirty: Bool) {
         fileURL = nil
+        chosenSyntax = nil
         encoding = .utf8
         lineEnding = .lf
         byteSize = text.utf8.count
@@ -857,6 +891,7 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
     func newDocument() {
         draftID = DraftStore.newID()
         fileURL = nil
+        chosenSyntax = nil
         generatedTitle = nil
         encoding = .utf8
         lineEnding = .lf
@@ -1017,6 +1052,14 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
     func selectNextOccurrence() {
         guard canEditRawText else { NSSound.beep(); return }
         textView.selectNextOccurrence()
+    }
+    func selectAllSearchMatches() -> SearchSelectAllOutcome {
+        guard canEditRawText, !searchInvalid, !searchQuery.isEmpty else { return .unavailable }
+        guard !matchesCapped else { return .capped }
+        guard !matches.isEmpty else { return .noMatches }
+        textView.window?.makeFirstResponder(textView)
+        textView.selectSearchMatches(matches)
+        return .selectedMatches(matches.count)
     }
 
     // MARK: - 検索・置換
@@ -1226,7 +1269,7 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
         }
         let glyphs = lm.glyphRange(forBoundingRect: textView.visibleRect, in: container)
         let chars = lm.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
-        let length = (textView.string as NSString).length
+        let length = textView.textStorage?.length ?? 0
         let start = max(0, chars.location - 1000)
         let end = min(length, chars.location + chars.length + 1000)
         return NSRange(location: start, length: max(0, end - start))
@@ -1501,6 +1544,7 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
             lm.ensureLayout(for: container)
         }
         textView.needsDisplay = true
+        repaintVisibleSyntax()
     }
 
     func applyCurrentFontSize() {
@@ -1886,31 +1930,14 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
         }
     }
 
-    // MARK: - 语法高亮（Markdown - 主要编程语言）
+    // MARK: - 语法高亮
 
-    /// 请勿对超过此限制的文本进行着色（因为每次按键都会重新扫描整个文本，
-    /// 避免因文件过大而导致输入缓慢）。即使在这个可以打开到 8MB 的窗格中，
-    /// 实际经过手动编辑的文档和脚本通常都属于这个范围。
-    private static let syntaxHighlightSizeLimit = 2 * 1024 * 1024
+    /// 高亮与可编辑文档共用 8 MiB 上限；只有当前可见区域会写入 AppKit 属性。
+    private static let syntaxHighlightSizeLimit = sizeThreshold
+    private static let syntaxQueue = DispatchQueue(label: "SiftEditor.syntax", qos: .utility)
 
-    private enum EditorLanguage: Equatable { case markdown, code(CodeSyntax.Language) }
-
-    /// 由文件扩展名确定。如果扩展名未知，则为 nil（= 请勿绘制）。
-    private var currentLanguage: EditorLanguage? {
-        guard let ext = fileURL?.pathExtension.lowercased() else { return nil }
-        if ext == "md" || ext == "markdown" { return .markdown }
-        if let lang = CodeSyntax.Language.detect(extension: ext) { return .code(lang) }
-        return nil
-    }
-
-    /// 创建一个属性，使文本显示为粗体或斜体。由 `NSFontDescriptor`、symbolic 和 traits 确定。
-    /// (旧版 `NSFontManager.convert(_:toHaveTrait:)` 与 SF Mono San Francisco 类似)
-    /// 有时，Bold 字体无法在此类字体中正确找到——family/face 的处理方式。
-    /// 这是因为它与旧版 PostScript 字体不同。（`NSFontDescriptor` 也可以通过 Core 和 Text 获取）。
-    /// 但是，对于没有物理形状的字体（例如 Monaco），请使用负值 `strokeWidth`（以加粗边框） /
-    /// `obliqueness`（斜向倾斜）使其看起来相似。
     private func styledAttributes(baseFont: NSFont, trait: NSFontDescriptor.SymbolicTraits,
-                                   color: NSColor) -> [NSAttributedString.Key: Any] {
+                                  color: NSColor) -> [NSAttributedString.Key: Any] {
         var traits = baseFont.fontDescriptor.symbolicTraits
         traits.insert(trait)
         let descriptor = baseFont.fontDescriptor.withSymbolicTraits(traits)
@@ -1928,79 +1955,98 @@ final class EditableViewer: NSView, DocumentPane, NSTextViewDelegate {
         return attrs
     }
 
-    /// 根据其功能重新绘制标题、强调、注释、文本字符串、保留字等。
-    /// 我们将仅使用  / `NSLayoutManager` 中的 temporary 和 attribute（与搜索高亮显示相同的方法）。
-    /// textStorage 将不会更改，也不会包含在 undo 或任何已保存的数据中。
+    private func clearSyntaxHighlight() {
+        guard let range = paintedSyntaxRange, let layout = textView.layoutManager else { return }
+        paintedSyntaxRange = nil
+        let length = textView.textStorage?.length ?? 0
+        let clipped = NSIntersectionRange(range, NSRange(location: 0, length: length))
+        guard clipped.length > 0 else { return }
+        for key: NSAttributedString.Key in [.foregroundColor, .font, .underlineStyle, .strikethroughStyle,
+                                            .strokeWidth, .strokeColor, .obliqueness] {
+            layout.removeTemporaryAttribute(key, forCharacterRange: clipped)
+        }
+    }
+
     private func applySyntaxHighlight() {
-        guard let lm = textView.layoutManager else { return }
-        let text = textView.string as NSString
-        let full = NSRange(location: 0, length: text.length)
-        let keys: [NSAttributedString.Key] = [.foregroundColor, .font, .underlineStyle, .strikethroughStyle]
-        for key in keys { lm.removeTemporaryAttribute(key, forCharacterRange: full) }
-
-        guard let language = currentLanguage, canEdit, full.length <= Self.syntaxHighlightSizeLimit else { return }
-
-        switch language {
-        case .markdown:
-            let lines = MarkdownSyntax.lineRanges(text)
-            let fenced = MarkdownSyntax.fencedLineNumbers(lines.map { text.substring(with: $0) })
-            let spans = MarkdownSyntax.spans(text: text, lineRanges: lines, fenced: fenced)
-            guard !spans.isEmpty else { return }
-
-            let baseFont = textView.font ?? EditorFont.current()
-            // 根据角色改变色调：标题/列表 = 蓝色（结构），强调 = 橙色/紫色，代码 = 绿色，
-            // 引号、边框和管道为灰色（辅助角色），链接与现有的 linkColor 相同。
-            let headingColor = NSColor.systemBlue
-            let boldColor = NSColor.systemOrange
-            let italicColor = NSColor.systemPurple
-            let codeColor = NSColor.systemGreen
-            let quietColor = NSColor.secondaryLabelColor
-
-            for span in spans {
-                let attrs: [NSAttributedString.Key: Any]
-                switch span.role {
-                case .heading:
-                    attrs = styledAttributes(baseFont: baseFont, trait: .bold, color: headingColor)
-                case .bold:
-                    attrs = styledAttributes(baseFont: baseFont, trait: .bold, color: boldColor)
-                case .italic:
-                    attrs = styledAttributes(baseFont: baseFont, trait: .italic, color: italicColor)
-                case .strikethrough:
-                    attrs = [.strikethroughStyle: NSUnderlineStyle.single.rawValue, .foregroundColor: quietColor]
-                case .inlineCode:     attrs = [.foregroundColor: codeColor]
-                case .codeBlock:      attrs = [.foregroundColor: codeColor]
-                case .blockquote:
-                    attrs = styledAttributes(baseFont: baseFont, trait: .italic, color: quietColor)
-                case .horizontalRule: attrs = [.foregroundColor: quietColor]
-                case .listMarker:     attrs = [.foregroundColor: headingColor]
-                case .link:           attrs = [.foregroundColor: NSColor.linkColor, .underlineStyle: NSUnderlineStyle.single.rawValue]
-                case .tablePipe:      attrs = [.foregroundColor: quietColor]
+        highlightGeneration &+= 1
+        highlightTask?.cancel()
+        let generation = highlightGeneration
+        let syntax = currentSyntax
+        if syntax != highlightedSyntax {
+            clearSyntaxHighlight()
+            highlightedSyntax = nil
+        }
+        // NSTextStorage.length is cheap; avoid copying an entire multi-megabyte buffer on every keystroke.
+        guard syntax != .text, canEdit,
+              (textView.textStorage?.length ?? 0) <= Self.syntaxHighlightSizeLimit else {
+            clearSyntaxHighlight()
+            highlightSpans = nil
+            highlightedSyntax = nil
+            return
+        }
+        let content = textView.string
+        guard content.utf8.count <= Self.syntaxHighlightSizeLimit else {
+            clearSyntaxHighlight()
+            highlightSpans = nil
+            highlightedSyntax = nil
+            return
+        }
+        highlightedSyntax = syntax
+        highlightSpans = nil
+        // Tiny documents can be colored immediately. Larger ones are debounced and scanned off the UI thread.
+        if content.utf8.count <= 64 * 1024 {
+            paintSyntax(SwiftSyntaxEngine.spans(text: content, syntax: syntax), generation: generation)
+        } else {
+            let task = DispatchWorkItem { [weak self] in
+                let spans = SwiftSyntaxEngine.spans(text: content, syntax: syntax)
+                DispatchQueue.main.async { [weak self] in
+                    self?.paintSyntax(spans, generation: generation)
                 }
-                lm.addTemporaryAttributes(attrs, forCharacterRange: span.range)
             }
+            highlightTask = task
+            Self.syntaxQueue.asyncAfter(deadline: .now() + 0.12, execute: task)
+        }
+    }
 
-        case .code(let codeLanguage):
-            let spans = CodeSyntax.spans(text: text, language: codeLanguage)
-            guard !spans.isEmpty else { return }
-            // 该代码根据其功能改变颜色（关键字 = 蓝色，字符串 = 红色，数字 = 蓝绿色，注释 = 紫色）。
-            // （灰色，声明名称=紫色）。如果字体没有物理表示（例如，Monaco），则 Bold 容易失真。
-            // 声明名称（def/class 的名称和 YAML 的键）应该只通过颜色来区分，而不能改变字体。
-            let keywordColor = NSColor.systemBlue
-            let stringColor = NSColor.systemRed
-            let numberColor = NSColor.systemTeal
-            let commentColor = NSColor.secondaryLabelColor
-            let definitionColor = NSColor.systemIndigo
-            for span in spans {
-                let attrs: [NSAttributedString.Key: Any]
-                switch span.role {
-                case .comment:    attrs = [.foregroundColor: commentColor]
-                case .string:     attrs = [.foregroundColor: stringColor]
-                case .number:     attrs = [.foregroundColor: numberColor]
-                case .keyword:    attrs = [.foregroundColor: keywordColor]
-                case .definition: attrs = [.foregroundColor: definitionColor]
-                }
-                lm.addTemporaryAttributes(attrs, forCharacterRange: span.range)
+    private func paintSyntax(_ spans: [SwiftSyntaxEngine.Span], generation: Int) {
+        guard generation == highlightGeneration else { return }
+        highlightSpans = spans
+        repaintVisibleSyntax(force: true)
+    }
+
+    private func repaintVisibleSyntax(force: Bool = false) {
+        guard let spans = highlightSpans, let layout = textView.layoutManager else { return }
+        let length = textView.textStorage?.length ?? 0
+        let visible: NSRange = length <= 64 * 1024
+            ? NSRange(location: 0, length: length)
+            : visibleCharacterRange()
+        guard visible.length > 0 else { return }
+        if !force, paintedSyntaxRange == visible { return }
+        clearSyntaxHighlight()
+        paintedSyntaxRange = visible
+        let font = textView.font ?? EditorFont.current()
+        let theme = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? Theme.xcodeDark : Theme.xcodeLight
+        for span in SwiftSyntaxEngine.spans(spans, intersecting: visible) {
+            let clipped = NSIntersectionRange(span.range, visible)
+            guard clipped.length > 0, NSMaxRange(clipped) <= length else { continue }
+            let scope = span.scope
+            guard scope.id != 0 else { continue }
+            let style = theme.style(for: scope)
+            let color = NSColor(calibratedRed: CGFloat(style.foreground.components.red),
+                                green: CGFloat(style.foreground.components.green),
+                                blue: CGFloat(style.foreground.components.blue), alpha: 1)
+            var attrs: [NSAttributedString.Key: Any] = [.foregroundColor: color]
+            if scope.isWithin(.heading) || scope.isWithin(.bold) || style.bold {
+                attrs.merge(styledAttributes(baseFont: font, trait: .bold, color: color)) { _, new in new }
+            } else if scope.isWithin(.italic) || style.italic {
+                attrs.merge(styledAttributes(baseFont: font, trait: .italic, color: color)) { _, new in new }
             }
+            if scope.isWithin(.strikethrough) || style.strikethrough {
+                attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+            }
+            if style.underline { attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue }
+            layout.addTemporaryAttributes(attrs, forCharacterRange: clipped)
         }
     }
 
@@ -2048,7 +2094,7 @@ extension EditableViewer {
     var _testText: String { textView.string }
     var _testEncoding: DetectedEncoding { encoding }
     var _testLineEnding: LineEnding { lineEnding }
-    func _testSetText(_ s: String) { textView.string = s; invalidateLineIndex(); setDirty(true) }
+    func _testSetText(_ s: String) { textView.string = s; invalidateLineIndex(); setDirty(true); applySyntaxHighlight() }
     func _testSelect(_ range: NSRange) { textView.setSelectedRange(range) }
     var _testSelection: NSRange { textView.selectedRange() }
     /// 是否自动换行？（列标尺会截断换行，因此使用此功能进行检查。）
@@ -2073,6 +2119,7 @@ extension EditableViewer {
     @discardableResult func _testMoveColumnGuide(_ from: Int, to: Int) -> Bool { moveColumnGuide(from, to: to) }
     var _testColumnGuidesHidden: Bool { textView.columnGuidesHidden }
     var _testMatchCount: Int { matches.count }
+    var _testSelectedMatchRanges: [NSRange] { textView._testCarets }
     var _testMatchesCapped: Bool { matchesCapped }
     static var _testMatchCap: Int { matchCap }
     var _testCurrentMatch: Int { currentMatch }
@@ -2085,10 +2132,13 @@ extension EditableViewer {
     }
     @discardableResult func _testWrite(to url: URL) -> Bool { write(to: url) }
     var _testJsonQueryActive: Bool { jsonQueryActive }
-    var _testIsMarkdownFile: Bool { currentLanguage == .markdown }
+    var _testIsMarkdownFile: Bool { currentSyntax == .markdown }
+    var _testSyntax: EditorSyntax { currentSyntax }
+    var _testSyntaxTokenCount: Int? { highlightSpans?.count }
+    var _testPaintedSyntaxRange: NSRange? { paintedSyntaxRange }
     var _testCodeLanguage: CodeSyntax.Language? {
-        if case .code(let lang) = currentLanguage { return lang }
-        return nil
+        guard let ext = fileURL?.pathExtension.lowercased() else { return nil }
+        return CodeSyntax.Language.detect(extension: ext)
     }
     func _testMarkdownColor(at location: Int) -> NSColor? {
         textView.layoutManager?.temporaryAttribute(.foregroundColor, atCharacterIndex: location,

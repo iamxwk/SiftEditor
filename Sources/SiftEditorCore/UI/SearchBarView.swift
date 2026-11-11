@@ -47,6 +47,7 @@ final class SearchBarView: NSView, NSSearchFieldDelegate {
     var onQueryChange: ((String) -> Void)?
     var onNext: (() -> Void)?
     var onPrev: (() -> Void)?
+    var onSelectAll: (() -> Void)?
     var onClose: (() -> Void)?
     var onCaseToggle: ((Bool) -> Void)?
     var onRegexToggle: ((Bool) -> Void)?
@@ -343,7 +344,7 @@ final class SearchBarView: NSView, NSSearchFieldDelegate {
         let batch = action(L("search.dialog.batch"), selector: nil, enabled: false)
         let right = column([
             prev, next,
-            action(L("search.dialog.selectAll"), selector: nil, enabled: false),
+            action(L("search.dialog.selectAll"), selector: #selector(selectAllTapped)),
             action(L("search.dialog.setBookmark"), selector: nil, enabled: false),
             extractControl,
             action(L("search.dialog.replaceExpand"), selector: #selector(replaceExpandTapped)),
@@ -786,6 +787,7 @@ final class SearchBarView: NSView, NSSearchFieldDelegate {
     }
     @objc private func nextTapped() { rememberRecentSearch(); onNext?() }
     @objc private func prevTapped() { rememberRecentSearch(); onPrev?() }
+    @objc private func selectAllTapped() { rememberRecentSearch(); onSelectAll?() }
     @objc private func closeTapped() { onClose?() }
     @objc private func caseTapped() {
         AppSettings.setFindOption(.matchCase, caseToggle.state == .on)

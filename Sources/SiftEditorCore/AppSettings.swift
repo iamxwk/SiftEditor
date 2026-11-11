@@ -149,6 +149,20 @@ enum FindOption: String, CaseIterable {
 /// 应用程序的持久设置（UserDefaults 聚合）。
 enum AppSettings {
     private static let defaults = UserDefaults.standard
+    private static let syntaxOverridesKey = "SiftEditor.syntax.extensionOverrides"
+
+    static func syntaxLanguage(forExtension ext: String) -> EditorSyntax? {
+        guard let raw = defaults.dictionary(forKey: syntaxOverridesKey)?[ext.lowercased()] as? String else { return nil }
+        return EditorSyntax(rawValue: raw)
+    }
+
+    static func setSyntaxLanguage(_ language: EditorSyntax, forExtension ext: String) {
+        let key = ext.lowercased()
+        guard !key.isEmpty else { return }
+        var overrides = defaults.dictionary(forKey: syntaxOverridesKey) as? [String: String] ?? [:]
+        overrides[key] = language.rawValue
+        defaults.set(overrides, forKey: syntaxOverridesKey)
+    }
     private static let saveProgressKey = "SiftEditor.saveProgressStyle"
     private static let lineWrapKey = "SiftEditor.lineWrap"
     private static let tabWidthKey = "SiftEditor.tabWidth"

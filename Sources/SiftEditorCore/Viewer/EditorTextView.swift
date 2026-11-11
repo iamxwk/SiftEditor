@@ -241,6 +241,13 @@ final class EditorTextView: NSTextView {
         scrollRangeToVisible(found)
     }
 
+    /// 使用现有多选区机制选择查找结果，保留各匹配项的独立范围。
+    func selectSearchMatches(_ ranges: [NSRange]) {
+        guard !ranges.isEmpty else { NSSound.beep(); return }
+        applyCarets(ranges)
+        scrollRangeToVisible(ranges[0])
+    }
+
     /// Esc 禁用多光标功能（合并为一个主光标）。如果选择单个光标，则恢复为标准行为。
     override func cancelOperation(_ sender: Any?) {
         guard hasMultipleCarets else { super.cancelOperation(sender); return }

@@ -1,5 +1,14 @@
 import AppKit
 
+enum SearchSelectAllOutcome: Equatable {
+    case selectedMatches(Int)
+    case selectedLines(Int)
+    case pending
+    case noMatches
+    case capped
+    case unavailable
+}
+
 /// 用于将显示状态传达给状态栏的信息。
 struct ViewerState {
     var encodingName: String
@@ -163,6 +172,9 @@ protocol DocumentPane: NSView {
     func showOnlyLines(_ lines: [Int])
     func findNext()
     func findPrev()
+    /// 选择当前查找条件的全部匹配项。
+    @discardableResult func selectAllSearchMatches() -> SearchSelectAllOutcome
+    var hasSelectedSearchMatches: Bool { get }
     func setFollowMode(_ on: Bool)
     /// 输入完成：导入最后接收到的数据后停止跟踪。
     func endFollow()
@@ -327,6 +339,8 @@ extension DocumentPane {
     var supportsMultiCursor: Bool { false }
     func addCaret(above: Bool) {}
     func selectNextOccurrence() {}
+    func selectAllSearchMatches() -> SearchSelectAllOutcome { .unavailable }
+    var hasSelectedSearchMatches: Bool { false }
     func setPreserveCase(_ on: Bool) {}
 
     /// 对选定文本应用纯变换。简单地叠加在 selectedText/replaceSelection 之上。
